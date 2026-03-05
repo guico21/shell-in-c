@@ -19,73 +19,57 @@ static void free_argv(char **argv, int argc) {
 }
 
 int parse_user_input(const char *input, char **argv, size_t argc_cap) {
+  if (!input || !argv || argc_cap == 0) return 0;
+
   size_t argc = 0;
   size_t i = 0;
-  int in_squote = 0;
-  int in_dquote = 0;
 
-  if (!input || !argv || argc_cap == 0) return 0;
   while (input[i] != '\0') {
-    while (isspace((unsigned char)input[i])) i++; // we do unsigned casting cause isspace does not like signed char
+    while (isspace((unsigned char)input[i])) i++;
     if (input[i] == '\0') break;
-    if (argc + 1 >= argc_cap) break;  // keep space for final NULL
-
-    size_t start = i;
-    size_t out_len = 0;
-
-    // First pass: find end of token and compute output length excluding quotes
-    in_squote = 0;
-    in_dquote = 0;
-    while (input[i] != '\0') {
-      unsigned char c = (unsigned char)input[i];
-      if (!in_squote && !in_dquote && isspace(c)) break;
-      if (c == '\'' && !in_dquote) {
-        in_squote = !in_squote;
-        i++;
-        continue;
-      }
-      if (c == '\"' && !in_squote){
-        in_dquote = !in_dquote;
-        i++;
-        continue;
-      }
-      out_len++;
-      i++;
-    }
-    if (in_squote || in_dquote) {  // quote not closed before token ended
-      free_argv(argv, (int)argc);
-      return -1;
-    }
-    char *tok = (char *)malloc(out_len + 1);
+    if (argc + 1 >= argc_cap) break; // keep space for final NULL
+    size_t cap = strlen(input);
+    char *tok = (char *)malloc(cap);
     if (!tok) {
       free_argv(argv, (int)argc);
       return -2;
     }
+    int in_squote = 0;
+    int in_dquote = 0;
 
-    // Second pass: copy chars excluding quotes
-    size_t r = start;
     size_t w = 0;
-    in_squote = 0;
-    in_dquote = 0;
-    while (w < out_len && input[r] != '\0') {
-      unsigned char c = (unsigned char)input[r];
-      if (!in_squote && !in_dquote && isspace(c)) break;
-      if (c == '\'' && !in_dquote) {
-        in_squote = !in_squote;
-        r++;
+    while (input[i] != '\0') {
+      unsigned char c = (unsigned char)input[i];
+      if (!in_squote && !in_dquote && isspace(c)) {
+        break;
+      }
+      if (c == '\\' && !in_dquote && !in_squote){
+        tok[w++] = (unsigned char)input[++i];
+        i++;
         continue;
       }
-      if (c == '\"' && !in_squote){
+      if (c == '\'' && !in_dquote) {
+        in_squote = !in_squote;
+        i++;
+        continue;
+      }
+      if (c == '\"' && !in_squote) {
         in_dquote = !in_dquote;
-        r++;
+        i++;
         continue;
       }
       tok[w++] = (char)c;
-      r++;
+      i++;
+    }
+    if (in_squote || in_dquote) {
+      free(tok);
+      free_argv(argv, (int)argc);
+      return -1; /* unclosed quote */
     }
     tok[w] = '\0';
+    char *shrunk = (char *)realloc(tok, w + 1); // Adjusting memory for the sampled token
+    if (shrunk) tok = shrunk;
     argv[argc++] = tok;
-    // i is already at whitespace or '\0'. Next loop will skip spaces.
   }
   argv[argc] = NULL;
   return (int)argc;
