@@ -9,6 +9,23 @@
 #define BUFFER 16
 
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of pointers to litterals
+const char special_chars[] = {'\"', '$', '\'', '\\'};
+
+int is_special_char(char input){
+  size_t size = sizeof(special_chars) / sizeof(special_chars[0]);
+  for (size_t i = 0; i < size; i++){
+    if (input == special_chars[i]) return 1;
+  }
+  return 0;
+}
+
+size_t is_builtin_cmd(char *input){
+  size_t n = sizeof(builtin_cmds) / sizeof(builtin_cmds[0]);
+  for(size_t aux = 0; aux < n; aux++ ){
+    if (strcmp(input,builtin_cmds[aux]) ==0 ) return 1;
+  }
+  return 0;
+}
 
 static void free_argv(char **argv, int argc) {
     if (!argv) return;
@@ -43,6 +60,11 @@ int parse_user_input(const char *input, char **argv, size_t argc_cap) {
       if (!in_squote && !in_dquote && isspace(c)) {
         break;
       }
+      if (in_dquote && c == '\\' && is_special_char(input[i+1]) && input[i + 1] != '\0'){
+        tok[w++] = (unsigned char)input[++i];
+        i++;
+        continue;
+      }
       if (c == '\\' && !in_dquote && !in_squote){
         tok[w++] = (unsigned char)input[++i];
         i++;
@@ -75,13 +97,7 @@ int parse_user_input(const char *input, char **argv, size_t argc_cap) {
   return (int)argc;
 }
 
-size_t is_builtin_cmd(char *input){
-  size_t n = sizeof(builtin_cmds) / sizeof(builtin_cmds[0]);
-  for(size_t aux = 0; aux < n; aux++ ){
-    if (strcmp(input,builtin_cmds[aux]) ==0 ) return 1;
-  }
-  return 0;
-}
+
 
 int find_in_path(const char *command, const char *path_env, char *out, size_t out_len){
   // remember that *command is the first letter of the string.
