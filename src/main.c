@@ -5,13 +5,119 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <ctype.h>
+#include <fcntl.h>
 
 #define BUFFER 16
 
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
+const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
+
+int setup_redirection(int mode, const char *path, int *saved_fd, int *target_fd) {
+  int writing_type = O_TRUNC;
+  if (!saved_fd || !target_fd) {
+    return 0;
+  }
+  *saved_fd = -1;
+  *target_fd = -1;
+  if (mode == 0) {
+      return 1;
+  }
+  if (!path) {
+      return 0;
+  }
+  if (mode == 1) {
+    *target_fd = STDOUT_FILENO;
+  } else if (mode == 2) {
+    *target_fd = STDERR_FILENO;
+  } else if (mode == 3 || mode == 4){
+    *target_fd = STDOUT_FILENO;
+    writing_type = O_APPEND;
+  } else if (mode == 5) {
+    *target_fd = STDERR_FILENO;
+    writing_type = O_APPEND;
+  } else {
+    return 0;
+  }
+  *saved_fd = dup(*target_fd);
+  if (*saved_fd < 0) {
+    return 0;
+  }
+  int fd = open(path, O_WRONLY | O_CREAT | writing_type, 0644);
+  if (fd < 0) {
+    close(*saved_fd);
+    *saved_fd = -1;
+    return 0;
+  }
+  if (dup2(fd, *target_fd) < 0) {
+    close(fd);
+    close(*saved_fd);
+    *saved_fd = -1;
+    return 0;
+  }
+  close(fd);
+  return 1;
+}
+
+int setup_child_redirection(int mode, const char *path) {
+  int writing_type = O_TRUNC;
+  if (mode == 0) {
+      return 1;
+  }
+  int target_fd;
+  if (mode == 1) {
+    target_fd = STDOUT_FILENO;
+  } else if (mode == 2) {
+    target_fd = STDERR_FILENO;
+  } else if (mode == 3 || mode == 4){
+    target_fd = STDOUT_FILENO;
+    writing_type = O_APPEND;
+  } else if (mode == 5) {
+    target_fd = STDERR_FILENO;
+    writing_type = O_APPEND;
+  } else {
+    errno = EINVAL;
+    return 0;
+  }
+  int fd = open(path, O_WRONLY | O_CREAT | writing_type, 0644);
+  if (fd < 0) {
+    return 0;
+  }
+  if (dup2(fd, target_fd) < 0) {
+    close(fd);
+    return 0;
+  }
+  close(fd);
+  return 1;
+}
+
+int restore_redirection(int *saved_fd, int target_fd) {
+  if (!saved_fd || *saved_fd < 0) {
+    return 1;
+  }
+  if (dup2(*saved_fd, target_fd) < 0) {
+    close(*saved_fd);
+    *saved_fd = -1;
+    return 0;
+  }
+  close(*saved_fd);
+  *saved_fd = -1;
+  return 1;
+}
+
+int has_print_to_file_command(char *command){
+  /* This function is for understanding if the command is for printing data to an external file */
+  if (command == NULL) { return 0;}
+  if (strcmp(command, ">") == 0 || strcmp(command, "1>") == 0){ return 1;}
+  if (strcmp(command, "2>") == 0){ return 2; }
+  if (strcmp(command, ">>") == 0){ return 3; }
+  if (strcmp(command, "1>>") == 0){ return 4; }
+  if (strcmp(command, "2>>") == 0){ return 5; }
+  return 0;
+}
 
 int is_special_char(char input){
+  /* This functon is for undrstnading if the char is part of a special character */
   size_t size = sizeof(special_chars) / sizeof(special_chars[0]);
   for (size_t i = 0; i < size; i++){
     if (input == special_chars[i]) return 1;
@@ -20,6 +126,7 @@ int is_special_char(char input){
 }
 
 size_t is_builtin_cmd(char *input){
+  /* This function is for understanding if the command passed is a builtin command */
   size_t n = sizeof(builtin_cmds) / sizeof(builtin_cmds[0]);
   for(size_t aux = 0; aux < n; aux++ ){
     if (strcmp(input,builtin_cmds[aux]) ==0 ) return 1;
@@ -28,19 +135,19 @@ size_t is_builtin_cmd(char *input){
 }
 
 static void free_argv(char **argv, int argc) {
-    if (!argv) return;
-    for (int i = 0; argv[i] != NULL; i++) {
-        free(argv[i]);
-        argv[i] = NULL;
-    }
+  /* Freeing memory given a pointer of pointers */
+  if (!argv) return;
+  for (int i = 0; argv[i] != NULL; i++) {
+    free(argv[i]);
+    argv[i] = NULL;
+  }
 }
 
 int parse_user_input(const char *input, char **argv, size_t argc_cap) {
+  /* Function for tokenizing the user input into multiple tokens */
   if (!input || !argv || argc_cap == 0) return 0;
-
   size_t argc = 0;
   size_t i = 0;
-
   while (input[i] != '\0') {
     while (isspace((unsigned char)input[i])) i++;
     if (input[i] == '\0') break;
@@ -53,7 +160,6 @@ int parse_user_input(const char *input, char **argv, size_t argc_cap) {
     }
     int in_squote = 0;
     int in_dquote = 0;
-
     size_t w = 0;
     while (input[i] != '\0') {
       unsigned char c = (unsigned char)input[i];
@@ -97,15 +203,12 @@ int parse_user_input(const char *input, char **argv, size_t argc_cap) {
   return (int)argc;
 }
 
-
-
 int find_in_path(const char *command, const char *path_env, char *out, size_t out_len){
   // remember that *command is the first letter of the string.
   // we are checking that it is not empty with '\0'
   if (!command ||!*command || !out || out_len == 0){
     return 0;
   }
-
   // If the user is giving a path starting with /, I go and check the executable directly
   if (strchr(command, '/')){
     int n = snprintf(out, out_len, "%s", command);
@@ -114,12 +217,10 @@ int find_in_path(const char *command, const char *path_env, char *out, size_t ou
     }
     return access(out, X_OK) == 0;
   }
-
-  // If path is null
+  /* If path is null */
   if(!path_env){
     return 0;
   }
-
   size_t len = strlen(path_env); // size_t is an unsigned integer. int is signed integer
   char path_copy[len + 1];
   memcpy(path_copy, path_env, len + 1); // memcpy(*to, *from, numBytes);
@@ -151,6 +252,12 @@ int main(){
   size_t line_cap = 0;
   char candidate[4096];
   char *argv[BUFFER]; // This is for the arguments
+  int print_to_file = 0;
+  int saved_fd = -1;
+  int target_fd = -1;
+  int special_command_position = 0;
+  char *print_to_file_path;
+  char *print_to_file_buffer;
 
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -160,6 +267,10 @@ int main(){
     printf("PATH does not exist or is corrupted.\n");
   }
   while (1){
+    print_to_file = 0;
+    saved_fd = -1;
+    target_fd = -1;
+    special_command_position = -1;
     printf("$ ");
     ssize_t nread = getline(&user_input, &line_cap, stdin); // POSIX, hence ok for macOS and Linux. Hides several calls for memory management
     // The function below allows a full string to be read, including the ending caracter '\n'
@@ -185,18 +296,42 @@ int main(){
     if (argv[0] == NULL) {
       continue;
     }
+    
+    /* The following check shoul be ideally done in the funciton that parses the tokens.
+    However, for now, in order to keep modularity and division of concern, we keep it here.
+    Personally, we are duplicating calculations in serching for something that is already 
+    "serched" before. */
+    for (size_t i = 0; i < argc && !print_to_file; i++){
+      print_to_file = has_print_to_file_command(argv[i]);
+      if (print_to_file){
+        print_to_file_path = argv[i+1];
+        special_command_position = i;
+        continue;
+      }
+    }
     char *command = argv[0];
     if (strcmp(command, "exit") == 0){
       free_argv(argv, BUFFER);
       break;
     }
-
+    /* Checking if it is a buit in command */
+    if (is_builtin_cmd(command)){
+      if (!setup_redirection(print_to_file, print_to_file_path, &saved_fd, &target_fd)) {
+        perror("setup_redirection");
+        free_argv(argv, BUFFER);
+        continue;
+      }
+    }
     if (strcmp(command, "echo") == 0){
+      if (print_to_file){
+        argc = argc - 2;  // This should be done automatically and not manually like this
+      }
       for (size_t i = 1; i < argc; i++){
         if (i > 1) printf(" ");
         printf ("%s", argv[i]);
       }
       printf("\n");
+      restore_redirection(&saved_fd, target_fd);
       free_argv(argv, BUFFER);
       continue;
     }
@@ -207,15 +342,16 @@ int main(){
       // getcwd uses malloc. if we do not track it with a pointer, we lose track of memory
       if (!cwd){
         perror("getcwd");
+        restore_redirection(&saved_fd, target_fd);
         free_argv(argv, BUFFER);
         continue;
       }
       printf("%s\n", cwd);
+      restore_redirection(&saved_fd, target_fd);
       free(cwd);
       free_argv(argv, BUFFER);
       continue;
     }
-
     if (strcmp(command, "cd") == 0){
       const char *dest = NULL;
       if (argc >= 2){
@@ -226,30 +362,36 @@ int main(){
       }else{
         dest = getenv("HOME");
       }
-
       if (!dest) {
         printf("cd: HOME not set\n");
+        restore_redirection(&saved_fd, target_fd);
+        free_argv(argv, BUFFER);
         continue;
       }
       if (chdir(dest) != 0){
         printf("cd: %s: No such file or directory\n",dest);
       }
+      restore_redirection(&saved_fd, target_fd);
+      free_argv(argv, BUFFER);
       continue;
     }
 
     if(strcmp(command, "type") == 0){
       if (argc < 2){
         printf("No command has been inserted.\n");
+        restore_redirection(&saved_fd, target_fd);
+        free_argv(argv, BUFFER);
         continue;
       }
       char *q = argv[1];
       if (is_builtin_cmd(q)){
         printf("%s is a shell builtin\n", q);
       } else if (path_exist && find_in_path(q, path_env, candidate, sizeof(candidate))) {
-          printf("%s is %s\n", q, candidate);
+        printf("%s is %s\n", q, candidate);
       } else {
-          printf("%s: not found\n", q);
+        printf("%s: not found\n", q);
       }
+      restore_redirection(&saved_fd, target_fd);
       free_argv(argv, BUFFER);
       continue;
     }
@@ -261,14 +403,22 @@ int main(){
       // I feel this section should be improved for better error handling and less bespoke code
       pid_t pid = fork(); // gets child PID
       if (pid == 0) { // we are in the child
-          execv(candidate, argv);
-          perror("execv did not work out.");   // only if execv fails
-          _exit(127);
+        // TODO: make the if for saving to file or not with null in pointer >
+        if (print_to_file){
+          if (!setup_child_redirection(print_to_file, print_to_file_path)) {
+            perror("redirection");
+            _exit(1);
+          }
+          argv[special_command_position] = NULL;
+        }
+        execv(candidate, argv);
+        perror("execv did not work out");
+        _exit(127);
       } else if (pid > 0) { // We are in the parent
-          int status;
-          waitpid(pid, &status, 0);
+        int status;
+        waitpid(pid, &status, 0);
       } else {
-          perror("Fork did not work out.");
+        perror("Fork did not work out.");
       }
       free_argv(argv, BUFFER);
       continue;
