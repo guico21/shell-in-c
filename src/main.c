@@ -130,9 +130,11 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
     if (strncmp(cmds[i], buf, *len) == 0){
       match = cmds[i];
       matches++;
+      break;
     }
   }
   if (matches != 1){
+    printf("\n$ %s\a", buf);
     return 0;
   }
   size_t cmd_len = strlen(match);
@@ -351,7 +353,7 @@ int main(){
   struct termios original_termios;
 
   char user_input[4096];
-  size_t line_cap = 0;
+  // size_t line_cap = 0; /* Temporary removed caused no longer using dynamic memory allocation (for semplicity) */
   char candidate[4096];
   char *argv[BUFFER]; // This is for the arguments
   int print_to_file = 0;
