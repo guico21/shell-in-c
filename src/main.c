@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <termios.h>
 
 #define BUFFER 16
 
@@ -89,6 +90,105 @@ int setup_child_redirection(int mode, const char *path) {
   }
   close(fd);
   return 1;
+}
+
+int enable_raw_mode(struct termios *original){
+  if (original == NULL){
+    return 0;
+  }
+  if (tcgetattr(STDIN_FILENO, original) == -1){
+    return 0;
+  }
+  struct termios raw = *original;
+
+  raw.c_lflag &= ~(ICANON | ECHO);
+  raw.c_cc[VMIN] = 1;
+  raw.c_cc[VTIME] = 0;
+
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1){
+    return 0;
+  }
+  return 1;
+}
+
+int disable_raw_mode(const struct termios *original){
+  if (original == NULL){
+    return 0;
+  }
+  tcsetattr(STDIN_FILENO, TCSAFLUSH, original);
+  return 1;
+}
+
+int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count){
+  if (!buf || !len || *len == 0 || !cmds || cmd_count == 0) { return 0; }
+  if (strchr(buf, ' ') != NULL){
+    return 0;
+  }
+  const char *match = NULL;
+  size_t matches = 0;
+  for (size_t i = 0; i < cmd_count; i++){
+    if (strncmp(cmds[i], buf, *len) == 0){
+      match = cmds[i];
+      matches++;
+    }
+  }
+  if (matches != 1){
+    return 0;
+  }
+  size_t cmd_len = strlen(match);
+  if (cmd_len + 2 > cap){
+    return 0;
+  }
+  memcpy(buf, match, cmd_len);
+  buf[cmd_len] = ' ';
+  buf[cmd_len + 1] = '\0';
+  *len = cmd_len + 1;
+
+  printf("\r$ %s", buf);
+  fflush(stdout);
+  return 1;
+}
+
+int read_command_line(char *buf, size_t cap){
+  if (buf == NULL || cap == 0){
+    return -1;
+  }
+  size_t cmd_count = sizeof(builtin_cmds) / sizeof(builtin_cmds[0]);
+  size_t len = 0;
+  buf[0] = '\0';
+  while(1){
+    char c;
+    ssize_t n = read(STDIN_FILENO, &c, 1);
+    if (n <= 0){
+      return -1;
+    }
+    if (c == '\n' || c == '\r'){
+      buf[len] = '\0';
+      write(STDOUT_FILENO, "\n", 1);
+      return (int)len;
+    }
+    if (c == 127 || c == '\b'){
+      if (len > 0){
+        len --;
+        buf[len] = '\0';
+        write(STDOUT_FILENO, "\b \b", 3);
+      }
+      continue;
+    }
+    if (c == '\t') {
+      handle_tab(buf, &len, cap, builtin_cmds, cmd_count);
+      continue;
+    }
+
+    if (c >= 32 && c < 127){
+      if (len + 1 < cap){
+        buf[len++] = c;
+        buf[len] = '\0';
+        write(STDOUT_FILENO, &c, 1);
+      }
+      continue;
+    }
+  }
 }
 
 int restore_redirection(int *saved_fd, int target_fd) {
@@ -248,7 +348,9 @@ int find_in_path(const char *command, const char *path_env, char *out, size_t ou
 }
 
 int main(){
-  char *user_input = NULL;
+  struct termios original_termios;
+
+  char user_input[4096];
   size_t line_cap = 0;
   char candidate[4096];
   char *argv[BUFFER]; // This is for the arguments
@@ -266,22 +368,25 @@ int main(){
   if (!path_exist){
     printf("PATH does not exist or is corrupted.\n");
   }
+
+  if (enable_raw_mode(&original_termios) == -1) {
+    perror("enable_raw_mode");
+    return 1;
+  }
+
   while (1){
     print_to_file = 0;
     saved_fd = -1;
     target_fd = -1;
     special_command_position = -1;
     printf("$ ");
-    ssize_t nread = getline(&user_input, &line_cap, stdin); // POSIX, hence ok for macOS and Linux. Hides several calls for memory management
     // The function below allows a full string to be read, including the ending caracter '\n'
+    int nread = read_command_line(user_input, sizeof(user_input));
     if (nread < 0){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
     }
 
-    // With the below function, what we are doing is calculating the size of the string,
-    // stopping at the character '\n'
-    user_input[strcspn(user_input, "\n")] = '\0';
     // Isolating the first part of the string, which is meant to be a command
     int argc = parse_user_input(user_input, argv, BUFFER);
     if (argc == -1){
@@ -294,6 +399,7 @@ int main(){
       continue;
     }
     if (argv[0] == NULL) {
+      free_argv(argv, BUFFER);
       continue;
     }
     
@@ -425,6 +531,7 @@ int main(){
     }
     printf("%s: command not found\n", command);
   }
-  free(user_input);
+  // free(user_input);
+  disable_raw_mode(&original_termios);
   return 0;
 }
