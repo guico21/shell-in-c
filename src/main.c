@@ -31,6 +31,24 @@ int is_executable_file(const char *fullpath){
   return access(fullpath, X_OK) == 0;
 }
 
+size_t longest_common_len(char matches[][NAME_MAX + 1], size_t count){
+  /* Return the length of the longest common prefix shared by all strings */
+  if (count == 0){
+    return 0;
+  }
+  size_t i = 0;
+  while (matches[0][i] != '\0'){
+    char c = matches[0][i];
+    for (size_t j = 0; j < count; j++){
+      if (matches[j][i] != c){
+        return i;
+      }
+    }
+    i++;
+  }
+  return i;
+}
+
 int find_executable_prefix_match( const char *prefix, const char *path_env, char matches[][NAME_MAX + 1], size_t max_matches){
   if (!prefix || !*prefix || !path_env || !matches || max_matches == 0){ return 0; }
   size_t prefix_len = strlen(prefix);
@@ -40,7 +58,7 @@ int find_executable_prefix_match( const char *prefix, const char *path_env, char
   }
   char *saveptr = NULL;
   char *dir = strtok_r(path_copy, ":", &saveptr);
-  int match_count = 0;
+  size_t match_count = 0;
   while (dir != NULL){
     const char *use_dir;
     if (dir[0] == '\0'){
@@ -259,6 +277,19 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
     buf[match_len] = ' ';
     buf[match_len + 1] = '\0';
     *len = match_len + 1;
+    printf("\r$ %s", buf);
+    fflush(stdout);
+    return 1;
+  }
+  /* There are multiple matches */
+  size_t lcp_len = longest_common_len(matches, match_count);
+  if (lcp_len < *len){
+    if (lcp_len + 1 > cap){
+      return 0;
+    }
+    memcpy(buf, matches[0], lcp_len);
+    buf[lcp_len] = '\0';
+    *len = lcp_len;
     printf("\r$ %s", buf);
     fflush(stdout);
     return 1;
