@@ -235,32 +235,25 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   if (strchr(buf, ' ') != NULL){
     return 0;
   }
-  char matches[256][NAME_MAX + 1];
-  int match_count = 0;
-  for (int i = 0; i < cmd_count && match_count < 256; i++){
+  char builtin_matches[256][NAME_MAX + 1];
+  int builtin_count = 0;
+  for (int i = 0; i < cmd_count && builtin_count < 256; i++){
     if (strncmp(cmds[i], buf, *len) == 0){
-      strncpy(matches[match_count], cmds[i], NAME_MAX);
-      matches[match_count][NAME_MAX] = '\0';
-      match_count++;
+      strncpy(builtin_matches[builtin_count], cmds[i], NAME_MAX);
+      builtin_matches[builtin_count][NAME_MAX] = '\0';
+      builtin_count++;
     }
   }
-
   char exec_matches[256][NAME_MAX + 1];
-  int exec_count = find_executable_prefix_match(buf, path_env, exec_matches, 256);
-
-  for (int i = 0; i < exec_count && match_count < 256; i++){
-    int duplicate = 0;
-    for (size_t j = 0; j < match_count; j++){
-      if (strcmp(matches[j], exec_matches[i]) == 0){
-        duplicate = 1;
-        break;
-      }
-    }
-    if (!duplicate){
-      strncpy(matches[match_count], exec_matches[i], NAME_MAX);
-      matches[match_count][NAME_MAX] = '\0';
-      match_count++;
-    }
+  size_t exec_count = find_executable_prefix_match(buf, path_env, exec_matches, 256);
+  char (*matches)[NAME_MAX + 1] = NULL;
+  size_t match_count = 0;
+  if (exec_count > 0){
+    matches = exec_matches;
+    match_count = exec_count;
+  } else {
+    matches = builtin_matches;
+    match_count = builtin_count;
   }
   if (match_count == 0){
     printf("\a");
@@ -283,7 +276,7 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   }
   /* There are multiple matches */
   size_t lcp_len = longest_common_len(matches, match_count);
-  if (lcp_len < *len){
+  if (lcp_len > *len){
     if (lcp_len + 1 > cap){
       return 0;
     }
