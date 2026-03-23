@@ -17,6 +17,13 @@ const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
+/* Sorting function for printing the exec files and built in commands. Required for qsort*/
+int cmp_strings(const void *a, const void *b){
+  const char *sa = (const char *)a;
+  const char *sb = (const char *)b;
+  return strcmp(sa, sb);
+}
+
 int is_executable_file(const char *fullpath){
   struct stat st;
   if (stat(fullpath, &st) != 0){ return 0; }
@@ -263,6 +270,7 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
     fflush(stdout);
     return 0;
   }
+  qsort(matches, match_count, sizeof(matches[0]), cmp_strings); /* sorting the list of arrays */
   printf("\n");
   for (size_t i = 0; i < match_count; i++){
     printf("%s", matches[i]);
