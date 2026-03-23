@@ -24,8 +24,8 @@ int is_executable_file(const char *fullpath){
   return access(fullpath, X_OK) == 0;
 }
 
-int find_executable_prefix_match( const char *prefix, const char *path_env, char *out_match, size_t out_size){
-  if (!prefix || !*prefix || !path_env || !out_match || out_size == 0){ return 0; }
+int find_executable_prefix_match( const char *prefix, const char *path_env, char matches[][NAME_MAX + 1], size_t max_matches){
+  if (!prefix || !*prefix || !path_env || !matches || max_matches == 0){ return 0; }
   size_t prefix_len = strlen(prefix);
   char *path_copy = strdup(path_env);
   if (!path_copy){
@@ -34,8 +34,8 @@ int find_executable_prefix_match( const char *prefix, const char *path_env, char
   char *saveptr = NULL;
   char *dir = strtok_r(path_copy, ":", &saveptr);
   int match_count = 0;
-  char first_match[NAME_MAX + 1];
-  first_match[0] = '\0';
+  // char first_match[NAME_MAX + 1];
+  // first_match[0] = '\0';
   while (dir != NULL){
     const char *use_dir;
     if (dir[0] == '\0'){
@@ -53,23 +53,26 @@ int find_executable_prefix_match( const char *prefix, const char *path_env, char
         }
         char fullpath[PATH_MAX];
         int n = snprintf(fullpath, sizeof(fullpath), "%s/%s", use_dir, name);
-        if (n<0 || (size_t)n >= sizeof(fullpath)){
+        if (n < 0 || (size_t)n >= sizeof(fullpath)){
           continue;
         }
         if (!is_executable_file(fullpath)){
           continue;
         }
-        if (match_count == 0){
-          strncpy(first_match, name, sizeof(first_match)- 1);
-          first_match[sizeof(first_match) - 1] = '\0';
-          match_count = 1;
-        } else {
-          if (strcmp(first_match, name) != 0){
-            match_count = 2;
-            closedir(dp);
-            free(path_copy);
-            return 2;
+        int duplicate = 0;
+        for (int i = 0; i < match_count; i++){
+          if (strcmp(matches[i], name) == 0){
+            duplicate = 1;
+            break;
           }
+        }
+        if (duplicate){
+          continue;
+        }
+        if (match_count < max_matches){
+          strncpy(matches[match_count], name, NAME_MAX);
+          matches[match_count][NAME_MAX] = '\0';
+          match_count++;
         }
       }
       closedir(dp);
@@ -77,12 +80,7 @@ int find_executable_prefix_match( const char *prefix, const char *path_env, char
     dir = strtok_r(NULL, ":", &saveptr);
   }
   free(path_copy);
-  if (match_count == 1){
-    strncpy(out_match, first_match, out_size - 1);
-    out_match[out_size - 1] = '\0';
-    return 1;
-  }
-  return 0;
+  return match_count;
 }
 
 /* Child process functions*/
@@ -207,29 +205,52 @@ int disable_raw_mode(const struct termios *original){
 }
 
 /* Management of user entry and tab completition */
-int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env){
+int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env, int show_all_matches){
   if (!buf || !len || *len == 0){
     return 0;
   }
   if (strchr(buf, ' ') != NULL){
     return 0;
   }
-  const char *builtin_match = NULL;
-  size_t builtin_matches = 0;
-  for (size_t i = 0; i < cmd_count; i++){
+  char matches[256][NAME_MAX + 1];
+  int match_count = 0;
+  for (int i = 0; i < cmd_count && match_count < 256; i++){
     if (strncmp(cmds[i], buf, *len) == 0){
-      builtin_match = cmds[i];
-      builtin_matches++;
+      strncpy(matches[match_count], cmds[i], NAME_MAX);
+      matches[match_count][NAME_MAX] = '\0';
+      match_count++;
     }
   }
-  /* If builtins already give a unique match, prefer that and stop here */
-  if (builtin_matches == 1) {
-    size_t match_len = strlen(builtin_match);
-    if (match_len + 2 > cap) {
+
+  char exec_matches[256][NAME_MAX + 1];
+  int exec_count = find_executable_prefix_match(buf, path_env, exec_matches, 256);
+
+  for (int i = 0; i < exec_count && match_count < 256; i++){
+    int duplicate = 0;
+    for (size_t j = 0; j < match_count; j++){
+      if (strcmp(matches[j], exec_matches[i]) == 0){
+        duplicate = 1;
+        break;
+      }
+    }
+    if (!duplicate){
+      strncpy(matches[match_count], exec_matches[i], NAME_MAX);
+      matches[match_count][NAME_MAX] = '\0';
+      match_count++;
+    }
+  }
+  if (match_count == 0){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  if (match_count == 1){
+    size_t match_len = strlen(matches[0]);
+
+    if (match_len + 2 > cap){
       return 0;
     }
-
-    memcpy(buf, builtin_match, match_len);
+    memcpy(buf, matches[0], match_len);
     buf[match_len] = ' ';
     buf[match_len + 1] = '\0';
     *len = match_len + 1;
@@ -237,38 +258,21 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
     fflush(stdout);
     return 1;
   }
-  /* If multiple builtins match, that is ambiguous for now */
-  if (builtin_matches > 1) {
-    printf("\n$ %s\a", buf);
+  if (!show_all_matches){
+    printf("\a");
     fflush(stdout);
     return 0;
   }
-  /* No builtin match, so try PATH executables */
-  char exec_match[NAME_MAX + 1];
-  exec_match[0] = '\0';
-
-  int exec_result = find_executable_prefix_match(
-      buf, path_env, exec_match, sizeof(exec_match));
-
-  if (exec_result != 1) {
-    printf("\n$ %s\a", buf);
-    fflush(stdout);
-    return 0;
+  printf("\n");
+  for (size_t i = 0; i < match_count; i++){
+    printf("%s", matches[i]);
+    if (i + 1 < match_count){
+      printf(" ");
+    }
   }
-
-  size_t match_len = strlen(exec_match);
-  if (match_len + 2 > cap) {
-    return 0;
-  }
-
-  memcpy(buf, exec_match, match_len);
-  buf[match_len] = ' ';
-  buf[match_len + 1] = '\0';
-  *len = match_len + 1;
-
-  printf("\r$ %s", buf);
+  printf("\n$ %s", buf);
   fflush(stdout);
-  return 1;
+  return 0;
 }
 
 int read_command_line(char *buf, size_t cap, const char *path_env){
@@ -278,6 +282,10 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
   size_t cmd_count = sizeof(builtin_cmds) / sizeof(builtin_cmds[0]);
   size_t len = 0;
   buf[0] = '\0';
+  int tab_pressed_once = 0;
+  char last_tab_buf[cap];
+  last_tab_buf[0] = '\0';
+
   while(1){
     char c;
     ssize_t n = read(STDIN_FILENO, &c, 1);
@@ -295,19 +303,35 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
         buf[len] = '\0';
         write(STDOUT_FILENO, "\b \b", 3);
       }
+      tab_pressed_once = 0;
+      last_tab_buf[0] = '\0';
       continue;
     }
     if (c == '\t') {
-      handle_tab(buf, &len, cap, builtin_cmds, cmd_count, path_env);
+      int show_all_matches = 0;
+      if (tab_pressed_once && strcmp(buf, last_tab_buf) == 0){
+        show_all_matches = 1;
+      }
+      handle_tab(buf, &len, cap, builtin_cmds, cmd_count, path_env, show_all_matches);
+
+      if (!show_all_matches){
+        strncpy(last_tab_buf, buf, cap-1);
+        last_tab_buf[cap-1]= '\0';
+        tab_pressed_once = 1;
+      } else {
+        tab_pressed_once = 0;
+        last_tab_buf[0] = '\0';
+      }
       continue;
     }
-
     if (c >= 32 && c < 127){
       if (len + 1 < cap){
         buf[len++] = c;
         buf[len] = '\0';
         write(STDOUT_FILENO, &c, 1);
       }
+      tab_pressed_once = 0;
+      last_tab_buf[0] = '\0';
       continue;
     }
   }
