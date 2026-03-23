@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -14,6 +15,14 @@ const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
+int is_executable_file(const char *fullpath){
+  struct stat st;
+  if (stat(fullpath, &st) != 0){ return 0; }
+  if (!S_ISREG(st.st_mode)) { return 0; }
+  return access(fullpath, X_OK) == 0;
+}
+
+/* Child process functions*/
 int setup_redirection(int mode, const char *path, int *saved_fd, int *target_fd) {
   int writing_type = O_TRUNC;
   if (!saved_fd || !target_fd) {
@@ -60,6 +69,20 @@ int setup_redirection(int mode, const char *path, int *saved_fd, int *target_fd)
   return 1;
 }
 
+int restore_redirection(int *saved_fd, int target_fd) {
+  if (!saved_fd || *saved_fd < 0) {
+    return 1;
+  }
+  if (dup2(*saved_fd, target_fd) < 0) {
+    close(*saved_fd);
+    *saved_fd = -1;
+    return 0;
+  }
+  close(*saved_fd);
+  *saved_fd = -1;
+  return 1;
+}
+
 int setup_child_redirection(int mode, const char *path) {
   int writing_type = O_TRUNC;
   if (mode == 0) {
@@ -92,6 +115,7 @@ int setup_child_redirection(int mode, const char *path) {
   return 1;
 }
 
+/* Change in terminal behaviour functions*/
 int enable_raw_mode(struct termios *original){
   if (original == NULL){
     return 0;
@@ -119,6 +143,7 @@ int disable_raw_mode(const struct termios *original){
   return 1;
 }
 
+/* Management of user entry and tab completition */
 int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count){
   if (!buf || !len || *len == 0 || !cmds || cmd_count == 0) { return 0; }
   if (strchr(buf, ' ') != NULL){
@@ -191,20 +216,6 @@ int read_command_line(char *buf, size_t cap){
       continue;
     }
   }
-}
-
-int restore_redirection(int *saved_fd, int target_fd) {
-  if (!saved_fd || *saved_fd < 0) {
-    return 1;
-  }
-  if (dup2(*saved_fd, target_fd) < 0) {
-    close(*saved_fd);
-    *saved_fd = -1;
-    return 0;
-  }
-  close(*saved_fd);
-  *saved_fd = -1;
-  return 1;
 }
 
 int has_print_to_file_command(char *command){
@@ -349,6 +360,7 @@ int find_in_path(const char *command, const char *path_env, char *out, size_t ou
   return 0;
 }
 
+/* Main Function */
 int main(){
   struct termios original_termios;
 
