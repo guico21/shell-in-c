@@ -8,6 +8,8 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <termios.h>
+#include <limits.h>
+#include <dirent.h>
 
 #define BUFFER 16
 
@@ -20,6 +22,67 @@ int is_executable_file(const char *fullpath){
   if (stat(fullpath, &st) != 0){ return 0; }
   if (!S_ISREG(st.st_mode)) { return 0; }
   return access(fullpath, X_OK) == 0;
+}
+
+int find_executable_prefix_match( const char *prefix, const char *path_env, char *out_match, size_t out_size){
+  if (!prefix || !*prefix || !path_env || !out_match || out_size == 0){ return 0; }
+  size_t prefix_len = strlen(prefix);
+  char *path_copy = strdup(path_env);
+  if (!path_copy){
+    return 0;
+  }
+  char *saveptr = NULL;
+  char *dir = strtok_r(path_copy, ":", &saveptr);
+  int match_count = 0;
+  char first_match[NAME_MAX + 1];
+  first_match[0] = '\0';
+  while (dir != NULL){
+    const char *use_dir;
+    if (dir[0] == '\0'){
+      use_dir = ".";
+    } else {
+      use_dir = dir;
+    }
+    DIR *dp = opendir(use_dir);
+    if (dp){
+      struct dirent *entry;
+      while ( (entry = readdir(dp)) != NULL){
+        const char *name = entry->d_name;
+        if (strncmp(name, prefix, prefix_len) != 0){
+          continue;
+        }
+        char fullpath[PATH_MAX];
+        int n = snprintf(fullpath, sizeof(fullpath), "%s/%s", use_dir, name);
+        if (n<0 || (size_t)n >= sizeof(fullpath)){
+          continue;
+        }
+        if (!is_executable_file(fullpath)){
+          continue;
+        }
+        if (match_count == 0){
+          strncpy(first_match, name, sizeof(first_match)- 1);
+          first_match[sizeof(first_match) - 1] = '\0';
+          match_count = 1;
+        } else {
+          if (strcmp(first_match, name) != 0){
+            match_count = 2;
+            closedir(dp);
+            free(path_copy);
+            return 2;
+          }
+        }
+      }
+      closedir(dp);
+    }
+    dir = strtok_r(NULL, ":", &saveptr);
+  }
+  free(path_copy);
+  if (match_count == 1){
+    strncpy(out_match, first_match, out_size - 1);
+    out_match[out_size - 1] = '\0';
+    return 1;
+  }
+  return 0;
 }
 
 /* Child process functions*/
