@@ -222,35 +222,46 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
       builtin_matches++;
     }
   }
-  char exec_match[NAME_MAX + 1];
-  exec_match[0] = '\0';
-  int exec_result = find_executable_prefix_match(buf, path_env, exec_match, sizeof(exec_match));
+  /* If builtins already give a unique match, prefer that and stop here */
+  if (builtin_matches == 1) {
+    size_t match_len = strlen(builtin_match);
+    if (match_len + 2 > cap) {
+      return 0;
+    }
 
-  const char *final_match = NULL;
-  int total_matches = 0;
-  if (builtin_matches == 1){
-    final_match = builtin_match;
-    total_matches += 1;
-  } else if (builtin_matches > 1){
-    total_matches += 2;
+    memcpy(buf, builtin_match, match_len);
+    buf[match_len] = ' ';
+    buf[match_len + 1] = '\0';
+    *len = match_len + 1;
+    printf("\r$ %s", buf);
+    fflush(stdout);
+    return 1;
   }
-  if (exec_result == 1) {
-    final_match = exec_match;
-    total_matches += 1;
-  } else if (exec_result == 2) {
-    total_matches += 2;
-  }
-
-  if (total_matches != 1 || !final_match){
+  /* If multiple builtins match, that is ambiguous for now */
+  if (builtin_matches > 1) {
     printf("\n$ %s\a", buf);
     fflush(stdout);
     return 0;
   }
-  size_t match_len = strlen(final_match);
-  if (match_len + 2 > cap){
+  /* No builtin match, so try PATH executables */
+  char exec_match[NAME_MAX + 1];
+  exec_match[0] = '\0';
+
+  int exec_result = find_executable_prefix_match(
+      buf, path_env, exec_match, sizeof(exec_match));
+
+  if (exec_result != 1) {
+    printf("\n$ %s\a", buf);
+    fflush(stdout);
     return 0;
   }
-  memcpy(buf, final_match, match_len);
+
+  size_t match_len = strlen(exec_match);
+  if (match_len + 2 > cap) {
+    return 0;
+  }
+
+  memcpy(buf, exec_match, match_len);
   buf[match_len] = ' ';
   buf[match_len + 1] = '\0';
   *len = match_len + 1;
