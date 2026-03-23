@@ -41,8 +41,6 @@ int find_executable_prefix_match( const char *prefix, const char *path_env, char
   char *saveptr = NULL;
   char *dir = strtok_r(path_copy, ":", &saveptr);
   int match_count = 0;
-  // char first_match[NAME_MAX + 1];
-  // first_match[0] = '\0';
   while (dir != NULL){
     const char *use_dir;
     if (dir[0] == '\0'){
@@ -490,7 +488,6 @@ int find_in_path(const char *command, const char *path_env, char *out, size_t ou
 /* Main Function */
 int main(){
   struct termios original_termios;
-
   char user_input[4096];
   // size_t line_cap = 0; /* Temporary removed caused no longer using dynamic memory allocation (for semplicity) */
   char candidate[4096];
@@ -645,8 +642,6 @@ int main(){
 
     if (path_exist && find_in_path(command, path_env, candidate, sizeof(candidate))){
       // Executing the file
-      // printf("%s is an executable!\n",command);
-
       // I feel this section should be improved for better error handling and less bespoke code
       pid_t pid = fork(); // gets child PID
       if (pid == 0) { // we are in the child
@@ -672,7 +667,7 @@ int main(){
     }
     printf("%s: command not found\n", command);
   }
-  // free(user_input);
+  // free(user_input); /* Again, we moved to a static allocation, so free memory is now not needed */
   disable_raw_mode(&original_termios);
   return 0;
 }
