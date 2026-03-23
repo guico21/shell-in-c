@@ -207,39 +207,60 @@ int disable_raw_mode(const struct termios *original){
 }
 
 /* Management of user entry and tab completition */
-int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count){
-  if (!buf || !len || *len == 0 || !cmds || cmd_count == 0) { return 0; }
+int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env){
+  if (!buf || !len || *len == 0){
+    return 0;
+  }
   if (strchr(buf, ' ') != NULL){
     return 0;
   }
-  const char *match = NULL;
-  size_t matches = 0;
+  const char *builtin_match = NULL;
+  size_t builtin_matches = 0;
   for (size_t i = 0; i < cmd_count; i++){
     if (strncmp(cmds[i], buf, *len) == 0){
-      match = cmds[i];
-      matches++;
-      break;
+      builtin_match = cmds[i];
+      builtin_matches++;
     }
   }
-  if (matches != 1){
+  char exec_match[NAME_MAX + 1];
+  exec_match[0] = '\0';
+  int exec_result = find_executable_prefix_match(buf, path_env, exec_match, sizeof(exec_match));
+
+  const char *final_match = NULL;
+  int total_matches = 0;
+  if (builtin_matches == 1){
+    final_match = builtin_match;
+    total_matches += 1;
+  } else if (builtin_matches > 1){
+    total_matches += 2;
+  }
+  if (exec_result == 1) {
+    final_match = exec_match;
+    total_matches += 1;
+  } else if (exec_result == 2) {
+    total_matches += 2;
+  }
+
+  if (total_matches != 1 || !final_match){
     printf("\n$ %s\a", buf);
+    fflush(stdout);
     return 0;
   }
-  size_t cmd_len = strlen(match);
-  if (cmd_len + 2 > cap){
+  size_t match_len = strlen(final_match);
+  if (match_len + 2 > cap){
     return 0;
   }
-  memcpy(buf, match, cmd_len);
-  buf[cmd_len] = ' ';
-  buf[cmd_len + 1] = '\0';
-  *len = cmd_len + 1;
+  memcpy(buf, final_match, match_len);
+  buf[match_len] = ' ';
+  buf[match_len + 1] = '\0';
+  *len = match_len + 1;
 
   printf("\r$ %s", buf);
   fflush(stdout);
   return 1;
 }
 
-int read_command_line(char *buf, size_t cap){
+int read_command_line(char *buf, size_t cap, const char *path_env){
   if (buf == NULL || cap == 0){
     return -1;
   }
@@ -266,7 +287,7 @@ int read_command_line(char *buf, size_t cap){
       continue;
     }
     if (c == '\t') {
-      handle_tab(buf, &len, cap, builtin_cmds, cmd_count);
+      handle_tab(buf, &len, cap, builtin_cmds, cmd_count, path_env);
       continue;
     }
 
@@ -458,7 +479,7 @@ int main(){
     special_command_position = -1;
     printf("$ ");
     // The function below allows a full string to be read, including the ending caracter '\n'
-    int nread = read_command_line(user_input, sizeof(user_input));
+    int nread = read_command_line(user_input, sizeof(user_input), path_env);
     if (nread < 0){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
