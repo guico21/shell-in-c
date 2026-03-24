@@ -74,7 +74,39 @@ int path_is_directory(const char *path){
 
 /* Helper to scan a directory and collect matches */
 size_t find_path_mathches(const char *dir_to_open, const char *prefix, const char *replacement_base, PathMatch *matches, size_t max_matches){
-  
+  if (!dir_to_open || !prefix || !replacement_base || !matches || max_matches == 0){
+    return 0;
+  }
+  DIR *dir = opendir(dir_to_open);
+  if (!dir){
+    return 0;
+  }
+  struct dirent *entry;
+  size_t count = 0;
+  size_t prefix_len = strlen(prefix);
+  while ( (entry = readdir(dir)) != NULL){
+    const char *name = entry ->d_name;
+    if (strcmp(name, ".") == 0 || strcmp (name, ".") == 0){
+      continue;
+    }
+    if (strncmp(name, prefix, prefix_len) != 0){
+      continue;
+    }
+    if (count >= max_matches){
+      break;
+    }
+    if (snprintf(matches[count].text, sizeof(matches[count].text), "%s%s", replacement_base, name) >= (int) sizeof(matches[count].text)){
+      continue;
+    }
+    char full_fs_path[PATH_MAX];
+    if (snprintf(full_fs_path, sizeof(full_fs_path), "%s%s", dir_to_open, name) >= (int)size_of(full_fs_path)){
+      continue;
+    }
+    matches[count].is_dir = path_is_directory(full_fs_path);
+    count++;
+  }
+  closedir(dir);
+  return count;
 }
 
 /* Sorting function for printing the exec files and built in commands. Required for qsort*/
