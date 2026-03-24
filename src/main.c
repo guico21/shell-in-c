@@ -123,8 +123,8 @@ int is_executable_file(const char *fullpath){
   return access(fullpath, X_OK) == 0;
 }
 
+/* Return the length of the longest common prefix shared by all strings */
 size_t longest_common_len(char matches[][NAME_MAX + 1], size_t count){
-  /* Return the length of the longest common prefix shared by all strings */
   if (count == 0){
     return 0;
   }
@@ -139,6 +139,42 @@ size_t longest_common_len(char matches[][NAME_MAX + 1], size_t count){
     i++;
   }
   return i;
+}
+
+/* Retunrs the lenght of the longest common prefix for PathMatch */
+/* NOTE: some fuctionalities can be merged with the pre-existing funciton, but this will be done later */
+size_t longest_common_len_path_matches(PathMatch *matches, size_t count){
+  if (!matches || count == 0){
+    return 0;
+  }
+  size_t lcp = strlen (matches[0].text);
+  for (size_t i = 1; i < count; i++){
+    size_t j = 0;
+    while (j < lcp && matches[0].text[j] != '\0' && matches[i].text[j] != '\0' && matches[0].text[j] == matches[i].text[j]){
+      j++;
+    }
+    lcp = j;
+  }
+  return lcp;
+}
+
+/* Helper to replace the current token inside the given buffer buf */
+int replace_token_in_buffer(char *buf, size_t *len, size_t cap, size_t token_offset, size_t token_len, const char *replacement, int appent_extra_char, char extra_char){
+  if (!buf || !len || ! replacement){
+    return 0;
+  }
+  size_t replacement_len = strlen(replacement);
+  size_t extra_len;
+  if (appent_extra_char){
+    extra_len = 1;
+  } else {
+    extra_len = 0;
+  }
+  size_t new_len = *len - token_len + replacement_len + extra_len;
+  if (new_len + 1 > cap){
+    return 0;
+  }
+  // memmove()
 }
 
 size_t find_executable_prefix_match( const char *prefix, const char *path_env, char matches[][NAME_MAX + 1], size_t max_matches){
