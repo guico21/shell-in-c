@@ -17,6 +17,18 @@ const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
+/* Helper to find where a token start given the user input */
+char *find_current_token_start(char *buf, size_t len){
+  if(!buf){
+    return NULL;
+  }
+  size_t i = len;
+  while (i > 0 && buf[i-1] != ' '){
+    i--;
+  }
+  return &buf[i];
+}
+
 /* Sorting function for printing the exec files and built in commands. Required for qsort*/
 int cmp_strings(const void *a, const void *b){
   const char *sa = (const char *)a;
@@ -226,6 +238,9 @@ int disable_raw_mode(const struct termios *original){
   tcsetattr(STDIN_FILENO, TCSAFLUSH, original);
   return 1;
 }
+
+/* Function for handling the case of completing the command that is inserted by the user */
+int handle_tab_command(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env, int show_all_matches);
 
 /* Management of user entry and tab completition */
 int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env, int show_all_matches){
