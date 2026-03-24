@@ -116,6 +116,8 @@ int cmp_strings(const void *a, const void *b){
   return strcmp(sa, sb);
 }
 
+/* Sorting function for the struct PatchMatch*/
+
 int is_executable_file(const char *fullpath){
   struct stat st;
   if (stat(fullpath, &st) != 0){ return 0; }
@@ -174,10 +176,14 @@ int replace_token_in_buffer(char *buf, size_t *len, size_t cap, size_t token_off
   if (new_len + 1 > cap){
     return 0;
   }
-  memmove(buf + token_offset + replacement_len + extra_len,
+  /* Using memmove below is ok, but it could have been done with malloc operations too, creating and deleting buffers as 
+  we needed. The point in using memmove is because I found it is faster. For what I am building here it is nothing major,
+  probably a kind of "too much", but I wanted to try it anyway. Nevertheless, it has not been easy to think about it 
+  in the first place.*/
+  memmove(buf + token_offset + replacement_len + extra_len, /* We are moving bytes from one address to the other. We are worknig with addreses here */
           buf + token_offset + token_len,
           *len - (token_offset + token_len) + 1);
-  memcpy(buf + token_offset, replacement, replacement_len);
+  memcpy(buf + token_offset, replacement, replacement_len); /* in the space we created above, we are putting the new bytes (the chars). */
   if (appent_extra_char){
     buf[token_offset + replacement_len] = extra_char;
   }
