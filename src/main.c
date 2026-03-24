@@ -13,6 +13,11 @@
 
 #define BUFFER 16
 
+typedef struct{
+  char text[PATH_MAX];
+  int is_dir;
+} PathMatch;
+
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
@@ -27,6 +32,49 @@ char *find_current_token_start(char *buf, size_t len){
     i--;
   }
   return &buf[i];
+}
+
+/* Helper to split a token at the last / found in the string */
+int split_path_token(const char *token, char *dir_to_open, size_t dir_cap, char *prefix, size_t prefix_cap, char *replacement_base, size_t base_cap){
+  if (!token || !dir_to_open || !prefix || !replacement_base){
+    return 0;
+  }
+  const char *last_slash = strrchr(token, '/'); /* Retunr the pointer to the last char, in this case / */
+  if (!last_slash){
+    if (snprintf(dir_to_open, dir_cap, ".") >= (int)dir_cap){
+      return 0;
+    }
+    if (snprintf(prefix, prefix_cap, "%s", token) >= (int)prefix_cap){
+      return 0;
+    }
+    replacement_base[0] = '\0';
+    return 1;
+  }
+  size_t dir_len = (size_t) (last_slash - token + 1);
+  if (dir_len + 1 > dir_cap || dir_len + 1 > base_cap){
+    return 0;
+  }
+  memcpy(dir_to_open, token, dir_len);
+  dir_to_open[dir_len] = '\0';
+  memcpy(replacement_base, token, dir_len);
+  replacement_base[dir_len] = '\0';
+  if (snprintf(prefix,prefix_cap, "%s", last_slash + 1) >= (int)prefix_cap){
+    return 0;
+  }
+  return 1;
+}
+
+/* Helper to check if the path is a directory */
+int path_is_directory(const char *path){
+  if (!path){ return 0; }
+  struct stat st;
+  if (stat(path, &st) != 0) { return 0; }
+  return S_ISDIR(st.st_mode);
+}
+
+/* Helper to scan a directory and collect matches */
+size_t find_path_mathches(const char *dir_to_open, const char *prefix, const char *replacement_base, PathMatch *matches, size_t max_matches){
+  
 }
 
 /* Sorting function for printing the exec files and built in commands. Required for qsort*/
@@ -61,7 +109,7 @@ size_t longest_common_len(char matches[][NAME_MAX + 1], size_t count){
   return i;
 }
 
-int find_executable_prefix_match( const char *prefix, const char *path_env, char matches[][NAME_MAX + 1], size_t max_matches){
+size_t find_executable_prefix_match( const char *prefix, const char *path_env, char matches[][NAME_MAX + 1], size_t max_matches){
   if (!prefix || !*prefix || !path_env || !matches || max_matches == 0){ return 0; }
   size_t prefix_len = strlen(prefix);
   char *path_copy = strdup(path_env);
@@ -240,27 +288,25 @@ int disable_raw_mode(const struct termios *original){
 }
 
 /* Function for handling the case of completing the command that is inserted by the user */
-int handle_tab_command(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env, int show_all_matches);
-
-/* Management of user entry and tab completition */
-int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env, int show_all_matches){
-  if (!buf || !len || *len == 0){
+int handle_tab_command(char *buf, size_t *len, size_t cap, size_t token_offset, size_t token_len, const char **cmds, size_t cmd_count, const char *path_env, int show_all_matches){
+  (void)token_offset; /* silencing warnings at compiling time since we are not using it */
+  char token[NAME_MAX - 1];
+  if (token_len > NAME_MAX){
     return 0;
   }
-  if (strchr(buf, ' ') != NULL){
-    return 0;
-  }
+  memcpy(token, buf, token_len);
+  token[token_len] = '\0';
   char builtin_matches[256][NAME_MAX + 1];
   int builtin_count = 0;
   for (int i = 0; i < cmd_count && builtin_count < 256; i++){
-    if (strncmp(cmds[i], buf, *len) == 0){
+    if (strncmp(cmds[i], token, token_len) == 0){
       strncpy(builtin_matches[builtin_count], cmds[i], NAME_MAX);
       builtin_matches[builtin_count][NAME_MAX] = '\0';
       builtin_count++;
     }
   }
   char exec_matches[256][NAME_MAX + 1];
-  size_t exec_count = find_executable_prefix_match(buf, path_env, exec_matches, 256);
+  size_t exec_count = find_executable_prefix_match(token, path_env, exec_matches, 256);
   char (*matches)[NAME_MAX + 1] = NULL;
   size_t match_count = 0;
   if (exec_count > 0){
@@ -277,7 +323,6 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   }
   if (match_count == 1){
     size_t match_len = strlen(matches[0]);
-
     if (match_len + 2 > cap){
       return 0;
     }
@@ -318,6 +363,47 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   printf("\n$ %s", buf);
   fflush(stdout);
   return 0;
+}
+
+/* Function for handling the case of completing the path provided by the user, be for files or directories */
+int handle_tab_path(char *buf, size_t *len, size_t cap, size_t token_offset, size_t token_len, int show_all_matches){
+  (void)buf;
+  (void)len;
+  (void)cap;
+  (void)token_offset;
+  (void)token_len;
+  (void)show_all_matches;
+
+  printf("\a");
+  fflush(stdout);
+  return 0;
+}
+
+/* Management of user entry and tab completition */
+int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd_count, const char *path_env, int show_all_matches){
+  if (!buf || !len){
+    return 0;
+  }
+  if (*len == 0){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  char *token_start = find_current_token_start(buf, *len);
+  if (!token_start){
+    return 0;
+  }
+  size_t token_offset = (size_t)(token_start-buf); /* gives back the index where the current token starts (in terms of positioning) */
+  size_t token_len = *len - token_offset;
+  if (token_len == 0){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  if (token_offset == 0){
+    return handle_tab_command(buf, len, cap, token_offset, token_len, cmds, cmd_count, path_env, show_all_matches);
+  }
+  return handle_tab_path(buf, len, cap, token_offset, token_len, show_all_matches);
 }
 
 int read_command_line(char *buf, size_t cap, const char *path_env){
