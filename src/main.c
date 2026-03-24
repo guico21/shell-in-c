@@ -174,7 +174,16 @@ int replace_token_in_buffer(char *buf, size_t *len, size_t cap, size_t token_off
   if (new_len + 1 > cap){
     return 0;
   }
-  // memmove()
+  memmove(buf + token_offset + replacement_len + extra_len,
+          buf + token_offset + token_len,
+          *len - (token_offset + token_len) + 1);
+  memcpy(buf + token_offset, replacement, replacement_len);
+  if (appent_extra_char){
+    buf[token_offset + replacement_len] = extra_char;
+  }
+  buf[new_len] = '\0';
+  *len = new_len;
+  return 1;
 }
 
 size_t find_executable_prefix_match( const char *prefix, const char *path_env, char matches[][NAME_MAX + 1], size_t max_matches){
