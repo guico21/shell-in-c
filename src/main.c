@@ -58,7 +58,7 @@ int split_path_token(const char *token, char *dir_to_open, size_t dir_cap, char 
   }
   const char *last_slash = strrchr(token, '/'); /* Retunr the pointer to the last char, in this case / */
   if (!last_slash){
-    if (snprintf(dir_to_open, dir_cap, ".") >= (int)dir_cap){
+    if (snprintf(dir_to_open, dir_cap, "./") >= (int)dir_cap){
       return 0;
     }
     if (snprintf(prefix, prefix_cap, "%s", token) >= (int)prefix_cap){
@@ -125,6 +125,8 @@ size_t find_path_matches(const char *dir_to_open, const char *prefix, const char
       continue;
     }
     matches[count].is_dir = path_is_directory(full_fs_path);
+    // printf("DEBUG match='%s' full='%s' is_dir=%d\n",
+    //    matches[count].text, full_fs_path, matches[count].is_dir);
     count++;
   }
   closedir(dir);
@@ -479,7 +481,7 @@ int handle_tab_command(char *buf, size_t *len, size_t cap, size_t token_offset, 
 
 /* Function for handling the case of completing the path provided by the user, be for files or directories */
 int handle_tab_path(char *buf, size_t *len, size_t cap, size_t token_offset, size_t token_len, int show_all_matches){
-  if (!buf || !len || token_len == 0){
+  if (!buf || !len){
     printf("\a");
     fflush(stdout);
     return 0;
@@ -532,7 +534,7 @@ int handle_tab_path(char *buf, size_t *len, size_t cap, size_t token_offset, siz
     }
     buf[token_offset + lcp_len] = '\0';
     *len = token_offset + lcp_len;
-    printf("\r %s", buf);
+    printf("\r$ %s", buf);
     fflush(stdout);
     return 1;
   }
@@ -573,12 +575,12 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   }
   size_t token_offset = (size_t)(token_start-buf); /* gives back the index where the current token starts (in terms of positioning) */
   size_t token_len = *len - token_offset;
-  if (token_len == 0){
-    printf("\a");
-    fflush(stdout);
-    return 0;
-  }
   if (token_offset == 0){
+    if (token_len == 0){
+      printf("\a");
+      fflush(stdout);
+      return 0;
+    }
     return handle_tab_command(buf, len, cap, token_offset, token_len, cmds, cmd_count, path_env, show_all_matches);
   }
   return handle_tab_path(buf, len, cap, token_offset, token_len, show_all_matches);
