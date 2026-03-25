@@ -22,6 +22,7 @@ const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
+
 /* Helper to find where a token start given the user input */
 char *find_current_token_start(char *buf, size_t len){
   if(!buf){
@@ -73,7 +74,7 @@ int path_is_directory(const char *path){
 }
 
 /* Helper to scan a directory and collect matches */
-size_t find_path_mathches(const char *dir_to_open, const char *prefix, const char *replacement_base, PathMatch *matches, size_t max_matches){
+size_t find_path_matches(const char *dir_to_open, const char *prefix, const char *replacement_base, PathMatch *matches, size_t max_matches){
   if (!dir_to_open || !prefix || !replacement_base || !matches || max_matches == 0){
     return 0;
   }
@@ -86,7 +87,7 @@ size_t find_path_mathches(const char *dir_to_open, const char *prefix, const cha
   size_t prefix_len = strlen(prefix);
   while ( (entry = readdir(dir)) != NULL){
     const char *name = entry ->d_name;
-    if (strcmp(name, ".") == 0 || strcmp (name, ".") == 0){
+    if (strcmp(name, ".") == 0 || strcmp (name, "..") == 0){
       continue;
     }
     if (strncmp(name, prefix, prefix_len) != 0){
@@ -99,7 +100,7 @@ size_t find_path_mathches(const char *dir_to_open, const char *prefix, const cha
       continue;
     }
     char full_fs_path[PATH_MAX];
-    if (snprintf(full_fs_path, sizeof(full_fs_path), "%s%s", dir_to_open, name) >= (int)size_of(full_fs_path)){
+    if (snprintf(full_fs_path, sizeof(full_fs_path), "%s%s", dir_to_open, name) >= (int)sizeof(full_fs_path)){
       continue;
     }
     matches[count].is_dir = path_is_directory(full_fs_path);
@@ -440,6 +441,8 @@ int handle_tab_command(char *buf, size_t *len, size_t cap, size_t token_offset, 
     fflush(stdout);
     return 0;
   }
+  /* Noting that qsort takes the address of the cmp_strings function, equivalent to &cmp_strings
+  Functionally this is like doing cmp_strings(&matches[i], &matches[j]) */
   qsort(matches, match_count, sizeof(matches[0]), cmp_strings); /* sorting the list of arrays */
   printf("\n");
   for (size_t i = 0; i < match_count; i++){
@@ -455,14 +458,80 @@ int handle_tab_command(char *buf, size_t *len, size_t cap, size_t token_offset, 
 
 /* Function for handling the case of completing the path provided by the user, be for files or directories */
 int handle_tab_path(char *buf, size_t *len, size_t cap, size_t token_offset, size_t token_len, int show_all_matches){
-  (void)buf;
-  (void)len;
-  (void)cap;
-  (void)token_offset;
-  (void)token_len;
-  (void)show_all_matches;
-
-  printf("\a");
+  if (!buf || !len || token_len == 0){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  char token[PATH_MAX];
+  if (token_len + 1 > sizeof(token)){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  memcpy(token, buf + token_offset, token_len);
+  token[token_len] = '\0';
+  char dir_to_open[PATH_MAX];
+  char prefix[NAME_MAX + 1];
+  char replacement_base[PATH_MAX];
+  if (!split_path_token(token, dir_to_open, sizeof(dir_to_open), prefix, sizeof(prefix), replacement_base, sizeof(replacement_base))){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  PathMatch matches[256];
+  size_t match_count = find_path_matches(dir_to_open, prefix, replacement_base, matches, 256);
+  if (match_count == 0){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  if (match_count == 1){
+    char suffix;
+    if (matches[0].is_dir){
+      suffix = '/';
+    } else {
+      suffix = ' ';
+    }
+    if (!replace_token_in_buffer(buf, len, cap, token_offset, token_len, matches[0].text, 1, suffix)){
+      printf("\a");
+      fflush(stdout);
+      return 0;
+    }
+    printf("\r$ %s", buf);
+    fflush(stdout);
+    return 1;
+  }
+  size_t lcp_len = longest_common_len_path_matches(matches, match_count);
+  if (lcp_len > token_len){
+    if (!replace_token_in_buffer(buf, len, cap, token_offset, token_len, matches[0].text, 0, '\0')){
+      printf("\a");
+      fflush(stdout);
+      return 0;
+    }
+    buf[token_offset + lcp_len] = '\0';
+    *len = token_offset + lcp_len;
+    printf("\r %s", buf);
+    fflush(stdout);
+    return 1;
+  }
+  if (!show_all_matches){
+    printf("\a");
+    fflush(stdout);
+    return 0;
+  }
+  qsort(matches, match_count, sizeof(matches[0]), cmp_path_matches);
+  printf("\n");
+  for (size_t i = 0; i < match_count; i++){
+    printf("%s", matches[i].text);
+    if(matches[i].is_dir){
+      printf("/");
+    }
+    if (i + 1 < match_count){
+      printf(" ");
+    }
+  }
+  printf("\n$ %s", buf);
   fflush(stdout);
   return 0;
 }
