@@ -22,6 +22,22 @@ const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
+/* Helper to avoid that multiple /// are displayed when in reality we want just one / (try echo ./// and it will not give a problem).
+I discovered that in UNIX system, the multiple // are not an issue, but for a shell it is better to avoid that display.      */
+int normalise_trailing_slashes(char *path){
+  if (!path){
+    return 0;
+  }
+  size_t len = strlen(path);
+  if (len == 0){
+    return 0;
+  }
+  while (len > 1 && path[len-1] == '/' && path[len-2] == '/'){
+    path[len - 1] = '\0';
+    len--;
+  }
+  return 1;
+}
 
 /* Helper to find where a token start given the user input */
 char *find_current_token_start(char *buf, size_t len){
@@ -59,6 +75,10 @@ int split_path_token(const char *token, char *dir_to_open, size_t dir_cap, char 
   dir_to_open[dir_len] = '\0';
   memcpy(replacement_base, token, dir_len);
   replacement_base[dir_len] = '\0';
+  /* Removing multiple final // */
+  normalise_trailing_slashes(dir_to_open);
+  normalise_trailing_slashes(replacement_base);
+  /* END normalization */
   if (snprintf(prefix,prefix_cap, "%s", last_slash + 1) >= (int)prefix_cap){
     return 0;
   }
