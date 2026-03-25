@@ -75,9 +75,10 @@ int split_path_token(const char *token, char *dir_to_open, size_t dir_cap, char 
   dir_to_open[dir_len] = '\0';
   memcpy(replacement_base, token, dir_len);
   replacement_base[dir_len] = '\0';
-  /* Removing multiple final // */
-  normalise_trailing_slashes(dir_to_open);
-  normalise_trailing_slashes(replacement_base);
+  /* Removing multiple final slashes // */
+  if ( normalise_trailing_slashes(dir_to_open) == 0 || normalise_trailing_slashes(replacement_base) == 0){
+    return 0;
+  }
   /* END normalization */
   if (snprintf(prefix,prefix_cap, "%s", last_slash + 1) >= (int)prefix_cap){
     return 0;
