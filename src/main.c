@@ -1010,7 +1010,6 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
   } else if (pid > 0) {   /* We are in the parent */
     int status;
     waitpid(pid, &status, 0);
-    printf("\n");
     return 0;
   } else {
     perror("Fork did not work out.");
@@ -1114,7 +1113,6 @@ int main(){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
     }
-
     // Isolating the first part of the string, which is meant to be a command
     int argc = parse_user_input(user_input, argv, BUFFER);
     if (argc == -1){
