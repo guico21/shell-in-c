@@ -1055,12 +1055,36 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
       if (i < ncmds - 1){
         if (dup2(pipes[i][1], STDOUT_FILENO) == -1){
           perror("dup2 stdout");
-          _exit(1); /* <--------------- cotinue here */
+          _exit(1);
         }
       }
+      for (int k = 0; k < npipes; k++){
+        close(pipes[k][0]);
+        close(pipes[k][1]);
+      }
+      if (is_builtin_cmd(pl->cmds[i].argv[0])){
+        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
+        if (rc == SHELL_EXIT_REQUESTED){
+          _exit(0);
+        } else {
+          _exit(rc);
+        }
+      }
+        exec_external_command(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
+      }
+      pids[i] = pid;
     }
+    for (int i = 0; i < npipes; i++) {
+      close(pipes[i][0]);
+      close(pipes[i][1]);
+    }
+    for (int i = 0; i < ncmds; i++) {
+      int status;
+      waitpid(pids[i], &status, 0);
+    }
+    return 0;
   }
-}
+
 
 /* Main Function */
 int main(){
@@ -1112,18 +1136,15 @@ int main(){
       free_argv(argv, BUFFER);
       continue;
     }
+    int rc = 0;
     if (pl.count == 1){
-      int rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate));
-      free_pipeline(&pl);
-      free_argv(argv, BUFFER);
-      if (rc == SHELL_EXIT_REQUESTED) break;  /* The first command has been "exit" */
-      continue;
+      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate));
+    } else {
+      rc = execute_multi_command(&pl, path_env, path_exist);
     }
-
-    /* pipeline section here */
-
     free_pipeline(&pl);
     free_argv(argv, BUFFER);
+    if (rc == SHELL_EXIT_REQUESTED) break;
   }
   disable_raw_mode(&original_termios);
   return 0;
