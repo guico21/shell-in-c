@@ -18,6 +18,17 @@ typedef struct{
   int is_dir;
 } PathMatch;
 
+/* The below struct is for working with pipelines */
+typedef struct {
+  char **argv;
+  int argc;
+} Command;
+
+typedef struct {
+  Command *cmds;
+  int count;
+} Pipeline;
+
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
