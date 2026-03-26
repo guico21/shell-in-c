@@ -18,7 +18,7 @@ typedef struct{
   int is_dir;
 } PathMatch;
 
-/* The below struct is for working with pipelines */
+/* The below two structs is for working with pipelines */
 typedef struct {
   char **argv;
   int argc;
@@ -706,7 +706,7 @@ int parse_user_input(const char *input, char **argv, size_t argc_cap) {
     while (isspace((unsigned char)input[i])) i++;
     if (input[i] == '\0') break;
     if (argc + 1 >= argc_cap) break; // keep space for final NULL
-    size_t cap = strlen(input);
+    size_t cap = strlen(input) + 1;
     char *tok = (char *)malloc(cap);
     if (!tok) {
       free_argv(argv, (int)argc);
@@ -801,6 +801,85 @@ int find_in_path(const char *command, const char *path_env, char *out, size_t ou
   return 0;
 }
 
+/* The below is to free memory taken by the Pipeline */
+void free_pipeline(Pipeline *pl){
+  if (!pl) return;
+  free(pl->cmds);
+  pl->cmds = NULL;
+  pl->count = 0;
+}
+
+/* The below function aims at building the pipeline tracker should the user write one */
+int build_pipeline_from_argv(char **argv, int argc, Pipeline *pl){
+  if (!argv || argc <= 0 || !pl){
+    return -1;
+  }
+  pl->cmds = NULL;
+  pl->count = 0;
+  int pipe_count = 0;
+  for (size_t i = 0; i < argc; i++){
+    if (argv[i] && strcmp(argv[i], "|") == 0){
+      pipe_count++;
+    }
+  }
+  int cmd_count = pipe_count + 1;
+  Command *cmds = calloc((size_t)cmd_count, sizeof(Command));
+  if(!cmds) { return -2; }
+  int cmd_index = 0;
+  int current_argc = 0;
+  int expecting_command = 1;
+  for (size_t i = 0; i < argc; i++){
+    if (!argv[i]){
+      free(cmds);
+      return -3;
+    }
+    if (strcmp(argv[i], "|") == 0 || strcmp(argv[i], "||") == 0){
+      if (expecting_command){
+        free(cmds);
+        return -4; // Here we have a situation like ||
+      }
+      argv[i] = NULL;
+      cmds[cmd_index].argc = current_argc;
+      cmd_index++;
+      current_argc = 0;
+      expecting_command = 1;
+      continue;
+    }
+    if (expecting_command){
+      cmds[cmd_index].argv = &argv[i];
+      expecting_command = 0;
+    }
+    current_argc++;
+  }
+  if (expecting_command){
+    free(cmds);
+    return -5;
+  }
+  cmds[cmd_index].argc = current_argc;
+  pl->cmds = cmds;
+  pl->count = cmd_count;
+  return cmd_count;
+}
+
+/* This was the original main() function. It becomes a stand alone method as we moved to pipelines.
+With all frankness, it is not the complete main(). Few things have been left there, but hte majority
+the logic is now here.    */
+int execute_single_command(Command *cmd, const char *path_env, int path_eist, char *candidate, size_t candidate_size){
+  if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]){
+    return -1;
+  }
+  int print_to_file = 0;
+  int saved_fd = -1;
+  int targt_fd = -1;
+  int special_command_position = -1;
+  char *print_to_file_path = NULL;
+  char **argv = cmd->argv;
+  int argc = cmd->argc;
+  char *command = argv[0];
+
+
+}
+
 /* Main Function */
 int main(){
   struct termios original_termios;
@@ -814,6 +893,7 @@ int main(){
   int special_command_position = 0;
   char *print_to_file_path;
   char *print_to_file_buffer;
+  Pipeline pl;
 
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -856,6 +936,17 @@ int main(){
       free_argv(argv, BUFFER);
       continue;
     }
+    int ncmds = build_pipeline_from_argv(argv, argc, &pl);
+    if (ncmds < 0) {
+      fprintf(stderr, "Syntax error near pipe\n");
+      free_argv(argv, BUFFER);
+      continue;
+    }
+    if (strcmp(pl.cmds[0].argv[0], "exit") == 0 && pl.count == 1) {
+      free_pipeline(&pl);
+      free_argv(argv, BUFFER);
+      break;
+    }
     
     /* The following check shoul be ideally done in the funciton that parses the tokens.
     However, for now, in order to keep modularity and division of concern, we keep it here.
@@ -869,11 +960,11 @@ int main(){
         continue;
       }
     }
-    char *command = argv[0];
-    if (strcmp(command, "exit") == 0){
-      free_argv(argv, BUFFER);
-      break;
-    }
+    char **cmd_argv = pl.cmds[0].argv;
+    int cmd_argc = pl.cmds[0].argc;
+    char *command = cmd_argv[0];
+
+
     /* Checking if it is a buit in command */
     if (is_builtin_cmd(command)){
       if (!setup_redirection(print_to_file, print_to_file_path, &saved_fd, &target_fd)) {
