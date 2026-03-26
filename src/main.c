@@ -862,6 +862,95 @@ int build_pipeline_from_argv(char **argv, int argc, Pipeline *pl){
   return cmd_count;
 }
 
+/* 
+Moved the logic below out in its own function in order to execute a single command. 
+As I have worked on the situations, I realised that this piece of logic will be required 
+in the child once pipelines are in place. So I decided to isolate it and keep it unique, 
+simlifying debug and "maintenance".
+*/
+int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+  if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]) {
+    return -1;
+  }
+  char **argv = cmd->argv;
+  int argc = cmd->argc;
+  char *command = argv[0];
+  if (strcmp(command , "exit") == 0){
+    return SHELL_EXIT_REQUESTED;
+  }
+  if (strcmp(command, "echo") == 0) {
+    for (int i = 1; i < argc; i++) {
+      if (i > 1) {
+        printf(" ");
+      }
+      printf("%s", argv[i]);
+    }
+    printf("\n");
+    return 0;
+  }
+  if (strcmp(command, "pwd") == 0) {
+    /*
+    Buffer and size automatically managed by UNIX. In this case we stored into cwd for later freeing up memory,
+    cause internally getcwd uses malloc. if we do not track it with a pointer, we lose track of memory
+    */
+    char *cwd = getcwd(NULL, 0);
+    if (!cwd) {
+      perror("getcwd");
+      return -4;
+    }
+    printf("%s\n", cwd);
+    free(cwd);
+    return 0;
+  }
+  if (strcmp(command, "cd") == 0) {
+    const char *dest = NULL;
+    if (argc >= 2) {
+      dest = argv[1];
+      if (strcmp(dest, "~") == 0) {
+        dest = getenv("HOME");
+      }
+    } else {
+      dest = getenv("HOME");
+    }
+    if (!dest) {
+      printf("cd: HOME not set\n");
+      return -5;
+    }
+    if (chdir(dest) != 0) {
+      printf("cd: %s: No such file or directory\n", dest);
+    }
+    return 0;
+  }
+  if (strcmp(command, "type") == 0) {
+    if (argc < 2) {
+      printf("No command has been inserted.\n");
+      return -6;
+    }
+    char *q = argv[1];
+    if (is_builtin_cmd(q)) {
+      printf("%s is a shell builtin\n", q);
+    } else if (path_exist && find_in_path(q, path_env, candidate, candidate_size)) {
+      printf("%s is %s\n", q, candidate);
+    } else {
+      printf("%s: not found\n", q);
+    }
+    return 0;
+  }
+  return -7;
+}
+
+/* This function is shared and will execute commands when there is a fork */
+void exec_external_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+  char *command = cmd->argv[0];
+  if (path_exist && find_in_path(command, path_env, candidate, candidate_size)){
+    execv(candidate, cmd->argv);
+    perror("execv did not work out");
+    _exit(127);
+  }
+  fprintf(stderr, "%s: command not found\n", command);
+  _exit(127);
+}
+
 /* This was the original main() function. It becomes a stand alone method as we moved to pipelines.
 With all frankness, it is not the complete main(). Few things have been left there, but hte majority
 the logic is now here.    */
@@ -892,112 +981,85 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
       special_command_position = i;
     }
   }
-  if (strcmp(command , "exit") == 0){
-    return SHELL_EXIT_REQUESTED;
+  if (print_to_file){
+    argv[special_command_position] = NULL;
+    cmd->argc = special_command_position;
+    argc = cmd->argc;
   }
   if (is_builtin_cmd(command)){
     if (!setup_redirection(print_to_file, print_to_file_path, &saved_fd, &target_fd)){
       perror("setup_redirection");
       return -3;
     }
+    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size);
+    restore_redirection(&saved_fd, target_fd);
+    return rc;
   }
-  if (strcmp(command, "echo") == 0) {
-    int effective_argc = argc;
+  /*
+  Executing the file. I feel this section should be improved for better error handling and less bespoke code
+  */
+  pid_t pid = fork();     /* We are getting the child PID */
+  if (pid == 0) {         /* We are in the child */
     if (print_to_file) {
-      effective_argc = special_command_position;
-    }
-    for (int i = 1; i < effective_argc; i++) {
-      if (i > 1) {
-        printf(" ");
+      if (!setup_child_redirection(print_to_file, print_to_file_path)) {
+        perror("redirection");
+        _exit(1);
       }
-      printf("%s", argv[i]);
     }
+    exec_external_command(cmd, path_env, path_exist, candidate, candidate_size);
+  } else if (pid > 0) {   /* We are in the parent */
+    int status;
+    waitpid(pid, &status, 0);
     printf("\n");
-    restore_redirection(&saved_fd, target_fd);
     return 0;
+  } else {
+    perror("Fork did not work out.");
+    return -4;
   }
-  if (strcmp(command, "pwd") == 0) {
-    /*
-    Buffer and size automatically managed by UNIX. In this case we stored into cwd for later freeing up memory,
-    cause internally getcwd uses malloc. if we do not track it with a pointer, we lose track of memory
-    */
-    char *cwd = getcwd(NULL, 0);
-    if (!cwd) {
-      perror("getcwd");
-      restore_redirection(&saved_fd, target_fd);
-      return -4;
+  return -7;
+}
+
+/* Function for executing pipelines */
+int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
+  if (!pl || !pl->cmds || pl->count <= 1){
+    return -1;
+  }
+  int ncmds = pl->count;
+  int npipes = ncmds - 1;
+  int pipes[npipes][2];
+  pid_t pids[ncmds];
+  for (int i = 0; i < npipes; i++){
+    if (pipe(pipes[i]) == -1){
+      perror("pipe");
+      return -2;
     }
-    printf("%s\n", cwd);
-    free(cwd);
-    restore_redirection(&saved_fd, target_fd);
-    return 0;
   }
-  if (strcmp(command, "cd") == 0) {
-    const char *dest = NULL;
-    if (argc >= 2) {
-      dest = argv[1];
-      if (strcmp(dest, "~") == 0) {
-        dest = getenv("HOME");
+  for (int i = 0; i < ncmds; i++){
+    pid_t pid = fork();
+    if (pid < 0){
+      perror("fork");
+      for (int k = 0; k < npipes; k++){
+        close(pipes[k][0]);
+        close(pipes[k][1]);
       }
-    } else {
-      dest = getenv("HOME");
+      return -3;
     }
-    if (!dest) {
-      printf("cd: HOME not set\n");
-      restore_redirection(&saved_fd, target_fd);
-      return -5;
-    }
-    if (chdir(dest) != 0) {
-      printf("cd: %s: No such file or directory\n", dest);
-    }
-    restore_redirection(&saved_fd, target_fd);
-    return 0;
-  }
-  if (strcmp(command, "type") == 0) {
-    if (argc < 2) {
-      printf("No command has been inserted.\n");
-      restore_redirection(&saved_fd, target_fd);
-      return -6;
-    }
-    char *q = argv[1];
-    if (is_builtin_cmd(q)) {
-      printf("%s is a shell builtin\n", q);
-    } else if (path_exist && find_in_path(q, path_env, candidate, candidate_size)) {
-      printf("%s is %s\n", q, candidate);
-    } else {
-      printf("%s: not found\n", q);
-    }
-    restore_redirection(&saved_fd, target_fd);
-    return 0;
-  }
-  if (path_exist && find_in_path(command, path_env, candidate, candidate_size)) {
-    /*
-    Executing the file. I feel this section should be improved for better error handling and less bespoke code
-    */
-    pid_t pid = fork();     /* We are getting the child PID */
-    if (pid == 0) {         /* We are in the child */
-      if (print_to_file) {
-        if (!setup_child_redirection(print_to_file, print_to_file_path)) {
-          perror("redirection");
+    if (pid == 0){
+      char candidate[4096];
+      if (i > 0){
+        if (dup2(pipes[i - 1][0], STDIN_FILENO) == -1){
+          perror("dup2 stdin");
           _exit(1);
         }
-        argv[special_command_position] = NULL;
       }
-      execv(candidate, argv);
-      perror("execv did not work out");
-      _exit(127);
-    } else if (pid > 0) {   /* We are in the parent */
-      int status;
-      waitpid(pid, &status, 0);
-      return 0;
-    } else {
-      perror("Fork did not work out.");
-      return -7;
+      if (i < ncmds - 1){
+        if (dup2(pipes[i][1], STDOUT_FILENO) == -1){
+          perror("dup2 stdout");
+          _exit(1); /* <--------------- cotinue here */
+        }
+      }
     }
   }
-  printf("%s: command not found\n", command);
-  restore_redirection(&saved_fd, target_fd);
-  return -8;
 }
 
 /* Main Function */
