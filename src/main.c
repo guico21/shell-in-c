@@ -12,11 +12,23 @@
 #include <dirent.h>
 
 #define BUFFER 16
+#define SHELL_EXIT_REQUESTED 99
 
 typedef struct{
   char text[PATH_MAX];
   int is_dir;
 } PathMatch;
+
+/* The below two structs is for working with pipelines */
+typedef struct {
+  char **argv;
+  int argc;
+} Command;
+
+typedef struct {
+  Command *cmds;
+  int count;
+} Pipeline;
 
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
@@ -695,7 +707,7 @@ int parse_user_input(const char *input, char **argv, size_t argc_cap) {
     while (isspace((unsigned char)input[i])) i++;
     if (input[i] == '\0') break;
     if (argc + 1 >= argc_cap) break; // keep space for final NULL
-    size_t cap = strlen(input);
+    size_t cap = strlen(input) + 1;
     char *tok = (char *)malloc(cap);
     if (!tok) {
       free_argv(argv, (int)argc);
@@ -790,22 +802,297 @@ int find_in_path(const char *command, const char *path_env, char *out, size_t ou
   return 0;
 }
 
+/* The below is to free memory taken by the Pipeline */
+void free_pipeline(Pipeline *pl){
+  if (!pl) return;
+  free(pl->cmds);
+  pl->cmds = NULL;
+  pl->count = 0;
+}
+
+/* The below function aims at building the pipeline tracker should the user write one */
+int build_pipeline_from_argv(char **argv, int argc, Pipeline *pl){
+  if (!argv || argc <= 0 || !pl){
+    return -1;
+  }
+  pl->cmds = NULL;
+  pl->count = 0;
+  int pipe_count = 0;
+  for (size_t i = 0; i < argc; i++){
+    if (argv[i] && strcmp(argv[i], "|") == 0){
+      pipe_count++;
+    }
+  }
+  int cmd_count = pipe_count + 1;
+  Command *cmds = calloc((size_t)cmd_count, sizeof(Command));
+  if(!cmds) { return -2; }
+  int cmd_index = 0;
+  int current_argc = 0;
+  int expecting_command = 1;
+  for (size_t i = 0; i < argc; i++){
+    if (!argv[i]){
+      free(cmds);
+      return -3;
+    }
+    if (strcmp(argv[i], "|") == 0 || strcmp(argv[i], "||") == 0){
+      if (expecting_command){
+        free(cmds);
+        return -4; // Here we have a situation like ||
+      }
+      argv[i] = NULL;
+      cmds[cmd_index].argc = current_argc;
+      cmd_index++;
+      current_argc = 0;
+      expecting_command = 1;
+      continue;
+    }
+    if (expecting_command){
+      cmds[cmd_index].argv = &argv[i];
+      expecting_command = 0;
+    }
+    current_argc++;
+  }
+  if (expecting_command){
+    free(cmds);
+    return -5;
+  }
+  cmds[cmd_index].argc = current_argc;
+  pl->cmds = cmds;
+  pl->count = cmd_count;
+  return cmd_count;
+}
+
+/* 
+Moved the logic below out in its own function in order to execute a single command. 
+As I have worked on the situations, I realised that this piece of logic will be required 
+in the child once pipelines are in place. So I decided to isolate it and keep it unique, 
+simlifying debug and "maintenance".
+*/
+int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+  if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]) {
+    return -1;
+  }
+  char **argv = cmd->argv;
+  int argc = cmd->argc;
+  char *command = argv[0];
+  if (strcmp(command , "exit") == 0){
+    return SHELL_EXIT_REQUESTED;
+  }
+  if (strcmp(command, "echo") == 0) {
+    for (int i = 1; i < argc; i++) {
+      if (i > 1) {
+        printf(" ");
+      }
+      printf("%s", argv[i]);
+    }
+    printf("\n");
+    return 0;
+  }
+  if (strcmp(command, "pwd") == 0) {
+    /*
+    Buffer and size automatically managed by UNIX. In this case we stored into cwd for later freeing up memory,
+    cause internally getcwd uses malloc. if we do not track it with a pointer, we lose track of memory
+    */
+    char *cwd = getcwd(NULL, 0);
+    if (!cwd) {
+      perror("getcwd");
+      return -4;
+    }
+    printf("%s\n", cwd);
+    free(cwd);
+    return 0;
+  }
+  if (strcmp(command, "cd") == 0) {
+    const char *dest = NULL;
+    if (argc >= 2) {
+      dest = argv[1];
+      if (strcmp(dest, "~") == 0) {
+        dest = getenv("HOME");
+      }
+    } else {
+      dest = getenv("HOME");
+    }
+    if (!dest) {
+      printf("cd: HOME not set\n");
+      return -5;
+    }
+    if (chdir(dest) != 0) {
+      printf("cd: %s: No such file or directory\n", dest);
+    }
+    return 0;
+  }
+  if (strcmp(command, "type") == 0) {
+    if (argc < 2) {
+      printf("No command has been inserted.\n");
+      return -6;
+    }
+    char *q = argv[1];
+    if (is_builtin_cmd(q)) {
+      printf("%s is a shell builtin\n", q);
+    } else if (path_exist && find_in_path(q, path_env, candidate, candidate_size)) {
+      printf("%s is %s\n", q, candidate);
+    } else {
+      printf("%s: not found\n", q);
+    }
+    return 0;
+  }
+  return -7;
+}
+
+/* This function is shared and will execute commands when there is a fork */
+void exec_external_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+  char *command = cmd->argv[0];
+  if (path_exist && find_in_path(command, path_env, candidate, candidate_size)){
+    execv(candidate, cmd->argv);
+    perror("execv did not work out");
+    _exit(127);
+  }
+  fprintf(stderr, "%s: command not found\n", command);
+  _exit(127);
+}
+
+/* This was the original main() function. It becomes a stand alone method as we moved to pipelines.
+With all frankness, it is not the complete main(). Few things have been left there, but hte majority
+the logic is now here.    */
+int execute_single_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+  if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]){
+    return -1;
+  }
+  /* Initial conditions */
+  int print_to_file = 0;
+  int saved_fd = -1;
+  int target_fd = -1;
+  int special_command_position = -1;
+  char *print_to_file_path = NULL;
+  /* Local copy */
+  char **argv = cmd->argv;
+  int argc = cmd->argc;
+  char *command = argv[0];
+  /* Logic starts */
+  for (size_t i = 0; i < argc && !print_to_file; i++){
+    if (!argv[i]) break;
+    print_to_file = has_print_to_file_command(argv[i]);
+    if (print_to_file){
+      if (i + 1 >= argc || argv[i+1] == NULL){
+        fprintf(stderr, "redirection syntax error\n");
+        return -2;
+      }
+      print_to_file_path = argv[i + 1];
+      special_command_position = i;
+    }
+  }
+  if (print_to_file){
+    argv[special_command_position] = NULL;
+    cmd->argc = special_command_position;
+    argc = cmd->argc;
+  }
+  if (is_builtin_cmd(command)){
+    if (!setup_redirection(print_to_file, print_to_file_path, &saved_fd, &target_fd)){
+      perror("setup_redirection");
+      return -3;
+    }
+    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size);
+    restore_redirection(&saved_fd, target_fd);
+    return rc;
+  }
+  /*
+  Executing the file. I feel this section should be improved for better error handling and less bespoke code
+  */
+  pid_t pid = fork();     /* We are getting the child PID */
+  if (pid == 0) {         /* We are in the child */
+    if (print_to_file) {
+      if (!setup_child_redirection(print_to_file, print_to_file_path)) {
+        perror("redirection");
+        _exit(1);
+      }
+    }
+    exec_external_command(cmd, path_env, path_exist, candidate, candidate_size);
+  } else if (pid > 0) {   /* We are in the parent */
+    int status;
+    waitpid(pid, &status, 0);
+    return 0;
+  } else {
+    perror("Fork did not work out.");
+    return -4;
+  }
+  return -7;
+}
+
+/* Function for executing pipelines */
+int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
+  if (!pl || !pl->cmds || pl->count <= 1){
+    return -1;
+  }
+  int ncmds = pl->count;
+  int npipes = ncmds - 1;
+  int pipes[npipes][2];
+  pid_t pids[ncmds];
+  for (int i = 0; i < npipes; i++){
+    if (pipe(pipes[i]) == -1){
+      perror("pipe");
+      return -2;
+    }
+  }
+  for (int i = 0; i < ncmds; i++){
+    pid_t pid = fork();
+    if (pid < 0){
+      perror("fork");
+      for (int k = 0; k < npipes; k++){
+        close(pipes[k][0]);
+        close(pipes[k][1]);
+      }
+      return -3;
+    }
+    if (pid == 0){
+      char candidate[4096];
+      if (i > 0){
+        if (dup2(pipes[i - 1][0], STDIN_FILENO) == -1){
+          perror("dup2 stdin");
+          _exit(1);
+        }
+      }
+      if (i < ncmds - 1){
+        if (dup2(pipes[i][1], STDOUT_FILENO) == -1){
+          perror("dup2 stdout");
+          _exit(1);
+        }
+      }
+      for (int k = 0; k < npipes; k++){
+        close(pipes[k][0]);
+        close(pipes[k][1]);
+      }
+      if (is_builtin_cmd(pl->cmds[i].argv[0])){
+        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
+        if (rc == SHELL_EXIT_REQUESTED){
+          _exit(0);
+        } else {
+          _exit(rc);
+        }
+      }
+        exec_external_command(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
+      }
+      pids[i] = pid;
+    }
+    for (int i = 0; i < npipes; i++) {
+      close(pipes[i][0]);
+      close(pipes[i][1]);
+    }
+    for (int i = 0; i < ncmds; i++) {
+      int status;
+      waitpid(pids[i], &status, 0);
+    }
+    return 0;
+  }
+
+
 /* Main Function */
 int main(){
   struct termios original_termios;
   char user_input[4096];
   // size_t line_cap = 0; /* Temporary removed caused no longer using dynamic memory allocation (for semplicity) */
   char candidate[4096];
-  char *argv[BUFFER]; // This is for the arguments
-  int print_to_file = 0;
-  int saved_fd = -1;
-  int target_fd = -1;
-  int special_command_position = 0;
-  char *print_to_file_path;
-  char *print_to_file_buffer;
-
-  // Flush after every printf
-  setbuf(stdout, NULL);
+  char *argv[BUFFER];     /* This is for the arguments */
+  setbuf(stdout, NULL);   /* Flush after every print */
   const char *path_env = getenv("PATH");
   int path_exist = (path_env != NULL);
   if (!path_exist){
@@ -818,10 +1105,7 @@ int main(){
   }
 
   while (1){
-    print_to_file = 0;
-    saved_fd = -1;
-    target_fd = -1;
-    special_command_position = -1;
+    Pipeline pl= {0};
     printf("$ ");
     // The function below allows a full string to be read, including the ending caracter '\n'
     int nread = read_command_line(user_input, sizeof(user_input), path_env);
@@ -829,7 +1113,6 @@ int main(){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
     }
-
     // Isolating the first part of the string, which is meant to be a command
     int argc = parse_user_input(user_input, argv, BUFFER);
     if (argc == -1){
@@ -845,134 +1128,22 @@ int main(){
       free_argv(argv, BUFFER);
       continue;
     }
-    
-    /* The following check shoul be ideally done in the funciton that parses the tokens.
-    However, for now, in order to keep modularity and division of concern, we keep it here.
-    Personally, we are duplicating calculations in serching for something that is already 
-    "serched" before. */
-    for (size_t i = 0; i < argc && !print_to_file; i++){
-      print_to_file = has_print_to_file_command(argv[i]);
-      if (print_to_file){
-        print_to_file_path = argv[i+1];
-        special_command_position = i;
-        continue;
-      }
-    }
-    char *command = argv[0];
-    if (strcmp(command, "exit") == 0){
-      free_argv(argv, BUFFER);
-      break;
-    }
-    /* Checking if it is a buit in command */
-    if (is_builtin_cmd(command)){
-      if (!setup_redirection(print_to_file, print_to_file_path, &saved_fd, &target_fd)) {
-        perror("setup_redirection");
-        free_argv(argv, BUFFER);
-        continue;
-      }
-    }
-    if (strcmp(command, "echo") == 0){
-      if (print_to_file){
-        argc = argc - 2;  // This should be done automatically and not manually like this
-      }
-      for (size_t i = 1; i < argc; i++){
-        if (i > 1) printf(" ");
-        printf ("%s", argv[i]);
-      }
-      printf("\n");
-      restore_redirection(&saved_fd, target_fd);
+    int ncmds = build_pipeline_from_argv(argv, argc, &pl);
+    if (ncmds < 0) {
+      fprintf(stderr, "Syntax error near pipe\n");
       free_argv(argv, BUFFER);
       continue;
     }
-
-    if (strcmp(command, "pwd") == 0){
-      char *cwd = getcwd(NULL, 0); // Buffer and size automatically managed by UNIX
-      // In this case we stored into cwd for later freeing up memory, cause internally
-      // getcwd uses malloc. if we do not track it with a pointer, we lose track of memory
-      if (!cwd){
-        perror("getcwd");
-        restore_redirection(&saved_fd, target_fd);
-        free_argv(argv, BUFFER);
-        continue;
-      }
-      printf("%s\n", cwd);
-      restore_redirection(&saved_fd, target_fd);
-      free(cwd);
-      free_argv(argv, BUFFER);
-      continue;
+    int rc = 0;
+    if (pl.count == 1){
+      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate));
+    } else {
+      rc = execute_multi_command(&pl, path_env, path_exist);
     }
-    if (strcmp(command, "cd") == 0){
-      const char *dest = NULL;
-      if (argc >= 2){
-        dest = argv[1];
-        if (strcmp(dest, "~") == 0){
-          dest = getenv("HOME");
-        }
-      }else{
-        dest = getenv("HOME");
-      }
-      if (!dest) {
-        printf("cd: HOME not set\n");
-        restore_redirection(&saved_fd, target_fd);
-        free_argv(argv, BUFFER);
-        continue;
-      }
-      if (chdir(dest) != 0){
-        printf("cd: %s: No such file or directory\n",dest);
-      }
-      restore_redirection(&saved_fd, target_fd);
-      free_argv(argv, BUFFER);
-      continue;
-    }
-
-    if(strcmp(command, "type") == 0){
-      if (argc < 2){
-        printf("No command has been inserted.\n");
-        restore_redirection(&saved_fd, target_fd);
-        free_argv(argv, BUFFER);
-        continue;
-      }
-      char *q = argv[1];
-      if (is_builtin_cmd(q)){
-        printf("%s is a shell builtin\n", q);
-      } else if (path_exist && find_in_path(q, path_env, candidate, sizeof(candidate))) {
-        printf("%s is %s\n", q, candidate);
-      } else {
-        printf("%s: not found\n", q);
-      }
-      restore_redirection(&saved_fd, target_fd);
-      free_argv(argv, BUFFER);
-      continue;
-    }
-
-    if (path_exist && find_in_path(command, path_env, candidate, sizeof(candidate))){
-      // Executing the file
-      // I feel this section should be improved for better error handling and less bespoke code
-      pid_t pid = fork(); // gets child PID
-      if (pid == 0) { // we are in the child
-        // TODO: make the if for saving to file or not with null in pointer >
-        if (print_to_file){
-          if (!setup_child_redirection(print_to_file, print_to_file_path)) {
-            perror("redirection");
-            _exit(1);
-          }
-          argv[special_command_position] = NULL;
-        }
-        execv(candidate, argv);
-        perror("execv did not work out");
-        _exit(127);
-      } else if (pid > 0) { // We are in the parent
-        int status;
-        waitpid(pid, &status, 0);
-      } else {
-        perror("Fork did not work out.");
-      }
-      free_argv(argv, BUFFER);
-      continue;
-    }
-    printf("%s: command not found\n", command);
+    free_pipeline(&pl);
+    free_argv(argv, BUFFER);
+    if (rc == SHELL_EXIT_REQUESTED) break;
   }
-  // free(user_input); /* Again, we moved to a static allocation, so free memory is now not needed */
   disable_raw_mode(&original_termios);
   return 0;
 }
