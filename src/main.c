@@ -1099,18 +1099,19 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
         }
       }
       exec_external_command(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
+      _exit(127);
     }
     pids[i] = pid; /* <--- Parent process continues from here after fork() */
   }
+  int status;
   for (int i = 0; i < npipes; i++) {
     close(pipes[i][0]);
     close(pipes[i][1]);
   }
   for (int i = 0; i < ncmds; i++) {
-    int status;
     waitpid(pids[i], &status, 0);
   }
-  return 0;
+  return status;
 }
 
 /* Main Function */
