@@ -13,6 +13,7 @@
 
 #define BUFFER 16
 #define SHELL_EXIT_REQUESTED 99
+#define HISTORY_CAPACITY 16
 
 typedef struct{
   char text[PATH_MAX];
@@ -29,10 +30,46 @@ typedef struct {
   Command *cmds;
   int count;
 } Pipeline;
+/* ------ */
 
-const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd"}; // array of pointers to litterals
+typedef struct {
+    char **entries;
+    int count;
+} History;
+
+const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd", "history"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
+
+void free_history(History *h){
+  for (int i = 0; i < h->count; i++){
+    free(h->entries[i]);
+  }
+  free(h->entries);
+  h->entries = NULL;
+  h->count = 0;
+}
+
+int save_history(History *h, const char *user_input){
+  if (h->count >= HISTORY_CAPACITY){
+    int capacity = HISTORY_CAPACITY * 2;
+    char **tmp = realloc(h->entries, capacity * sizeof(char *));
+    if (!tmp){
+      perror("realloc");
+      return -1;
+    }
+    h->entries = tmp;
+  }
+  size_t len = strlen(user_input) + 1;
+  h->entries[h->count] = malloc(len);
+  if (!h->entries[h->count]){
+    perror("malloc");
+    return 1;
+  }
+  memcpy(h->entries[h->count], user_input, len);
+  h->count++;
+  return 0;
+}
 
 /* Helper to avoid that multiple /// are displayed when in reality we want just one / (try echo ./// and it will not give a problem).
 I discovered that in UNIX system, the multiple // are not an issue, but for a shell it is better to avoid that display.      */
@@ -1121,20 +1158,27 @@ int main(){
   // size_t line_cap = 0; /* Temporary removed caused no longer using dynamic memory allocation (for semplicity) */
   char candidate[4096];
   char *argv[BUFFER];     /* This is for the arguments */
-  setbuf(stdout, NULL);   /* Flush after every print */
+  // setbuf(stdout, NULL);   /* Flush after every print */
   const char *path_env = getenv("PATH");
+  /* Below variable is for the history of commands. I could have used a struct
+  but I decided to go with an array of strings.   */
+  History history;
+  history.entries = malloc(HISTORY_CAPACITY * sizeof(char *));
+  if (!history.entries){
+    perror("malloc");
+  }
+  history.count = 0;
   int path_exist = (path_env != NULL);
   if (!path_exist){
     printf("PATH does not exist or is corrupted.\n");
   }
-
   if (enable_raw_mode(&original_termios) == -1) {
     perror("enable_raw_mode");
     return 1;
   }
-
   while (1){
     Pipeline pl= {0};
+    setbuf(stdout, NULL);   /* Flush after every print */
     printf("$ ");
     // The function below allows a full string to be read, including the ending caracter '\n'
     int nread = read_command_line(user_input, sizeof(user_input), path_env);
@@ -1142,6 +1186,7 @@ int main(){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
     }
+    save_history(&history, user_input);
     // Isolating the first part of the string, which is meant to be a command
     int argc = parse_user_input(user_input, argv, BUFFER);
     if (argc == -1){
@@ -1173,6 +1218,7 @@ int main(){
     free_argv(argv, BUFFER);
     if (rc == SHELL_EXIT_REQUESTED) break;
   }
+  free_history(&history);
   disable_raw_mode(&original_termios);
   return 0;
 }
