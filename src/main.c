@@ -106,6 +106,17 @@ int path_is_directory(const char *path){
   return S_ISDIR(st.st_mode);
 }
 
+int has_print_to_file_command(char *command){
+  /* This function is for understanding if the command is for printing data to an external file */
+  if (command == NULL) { return 0;}
+  if (strcmp(command, ">") == 0 || strcmp(command, "1>") == 0){ return 1;}
+  if (strcmp(command, "2>") == 0){ return 2; }
+  if (strcmp(command, ">>") == 0){ return 3; }
+  if (strcmp(command, "1>>") == 0){ return 4; }
+  if (strcmp(command, "2>>") == 0){ return 5; }
+  return 0;
+}
+
 /* Helper to scan a directory and collect matches */
 size_t find_path_matches(const char *dir_to_open, const char *prefix, const char *replacement_base, PathMatch *matches, size_t max_matches){
   if (!dir_to_open || !prefix || !replacement_base || !matches || max_matches == 0){
@@ -290,7 +301,31 @@ size_t find_executable_prefix_match( const char *prefix, const char *path_env, c
   return match_count;
 }
 
-/* Child process functions*/
+/* Fork redirection process functions */
+int prepare_command_redirection(Command *cmd, int *mode, char **path){
+  if (!cmd || !cmd->argv || cmd->argc <= 0 || !mode || !path) {
+    return 0;
+  }
+  *mode = 0;
+  *path = NULL;
+  for (int i = 0; i < cmd->argc; i++){
+    if(!cmd->argv[i]){ break; }
+    int m = has_print_to_file_command(cmd->argv[i]);
+    if (m != 0){
+      if (i + 1 >= cmd->argc || cmd->argv[i + 1] == NULL){
+        fprintf(stderr, "redirection syntax error\n");
+        return -1;
+      }
+      *mode = m;
+      *path = cmd->argv[i+1];
+      cmd->argv[i] = NULL;
+      cmd->argc = i;
+      return 1;
+    }
+  }
+  return 1;
+}
+
 int setup_redirection(int mode, const char *path, int *saved_fd, int *target_fd) {
   int writing_type = O_TRUNC;
   if (!saved_fd || !target_fd) {
@@ -304,18 +339,24 @@ int setup_redirection(int mode, const char *path, int *saved_fd, int *target_fd)
   if (!path) {
       return 0;
   }
-  if (mode == 1) {
-    *target_fd = STDOUT_FILENO;
-  } else if (mode == 2) {
-    *target_fd = STDERR_FILENO;
-  } else if (mode == 3 || mode == 4){
-    *target_fd = STDOUT_FILENO;
-    writing_type = O_APPEND;
-  } else if (mode == 5) {
-    *target_fd = STDERR_FILENO;
-    writing_type = O_APPEND;
-  } else {
-    return 0;
+  switch (mode) { /* Mode values are returned by the function. Those can range from 1 to 5 */
+    case 1:
+      *target_fd = STDOUT_FILENO;
+      break;
+    case 2:
+      *target_fd = STDERR_FILENO;
+      break;
+    case 3: /* Case 3 and 4 behave the same */
+    case 4:
+      *target_fd = STDOUT_FILENO;
+      writing_type = O_APPEND;
+      break;
+    case 5:
+      *target_fd = STDERR_FILENO;
+      writing_type = O_APPEND;
+      break;
+    default:
+      return 0;
   }
   *saved_fd = dup(*target_fd);
   if (*saved_fd < 0) {
@@ -337,6 +378,43 @@ int setup_redirection(int mode, const char *path, int *saved_fd, int *target_fd)
   return 1;
 }
 
+int setup_child_redirection(int mode, const char *path) {
+  int writing_type = O_TRUNC;
+  if (mode == 0) {
+      return 1;
+  }
+  int target_fd;
+  switch (mode) { /* Mode values are returned by the function. Those can range from 1 to 5 */
+    case 1:
+      target_fd = STDOUT_FILENO;
+      break;
+    case 2:
+      target_fd = STDERR_FILENO;
+      break;
+    case 3: /* Case 3 and 4 behave the same */
+    case 4:
+      target_fd = STDOUT_FILENO;
+      writing_type = O_APPEND;
+      break;
+    case 5:
+      target_fd = STDERR_FILENO;
+      writing_type = O_APPEND;
+      break;
+    default:
+      return 0;
+  }
+  int fd = open(path, O_WRONLY | O_CREAT | writing_type, 0644);
+  if (fd < 0) {
+    return 0;
+  }
+  if (dup2(fd, target_fd) < 0) {
+    close(fd);
+    return 0;
+  }
+  close(fd);
+  return 1;
+}
+
 int restore_redirection(int *saved_fd, int target_fd) {
   if (!saved_fd || *saved_fd < 0) {
     return 1;
@@ -348,38 +426,6 @@ int restore_redirection(int *saved_fd, int target_fd) {
   }
   close(*saved_fd);
   *saved_fd = -1;
-  return 1;
-}
-
-int setup_child_redirection(int mode, const char *path) {
-  int writing_type = O_TRUNC;
-  if (mode == 0) {
-      return 1;
-  }
-  int target_fd;
-  if (mode == 1) {
-    target_fd = STDOUT_FILENO;
-  } else if (mode == 2) {
-    target_fd = STDERR_FILENO;
-  } else if (mode == 3 || mode == 4){
-    target_fd = STDOUT_FILENO;
-    writing_type = O_APPEND;
-  } else if (mode == 5) {
-    target_fd = STDERR_FILENO;
-    writing_type = O_APPEND;
-  } else {
-    errno = EINVAL;
-    return 0;
-  }
-  int fd = open(path, O_WRONLY | O_CREAT | writing_type, 0644);
-  if (fd < 0) {
-    return 0;
-  }
-  if (dup2(fd, target_fd) < 0) {
-    close(fd);
-    return 0;
-  }
-  close(fd);
   return 1;
 }
 
@@ -658,17 +704,6 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
       continue;
     }
   }
-}
-
-int has_print_to_file_command(char *command){
-  /* This function is for understanding if the command is for printing data to an external file */
-  if (command == NULL) { return 0;}
-  if (strcmp(command, ">") == 0 || strcmp(command, "1>") == 0){ return 1;}
-  if (strcmp(command, "2>") == 0){ return 2; }
-  if (strcmp(command, ">>") == 0){ return 3; }
-  if (strcmp(command, "1>>") == 0){ return 4; }
-  if (strcmp(command, "2>>") == 0){ return 5; }
-  return 0;
 }
 
 int is_special_char(char input){
@@ -964,28 +999,11 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
   int target_fd = -1;
   int special_command_position = -1;
   char *print_to_file_path = NULL;
-  /* Local copy */
-  char **argv = cmd->argv;
-  int argc = cmd->argc;
-  char *command = argv[0];
-  /* Logic starts */
-  for (size_t i = 0; i < argc && !print_to_file; i++){
-    if (!argv[i]) break;
-    print_to_file = has_print_to_file_command(argv[i]);
-    if (print_to_file){
-      if (i + 1 >= argc || argv[i+1] == NULL){
-        fprintf(stderr, "redirection syntax error\n");
-        return -2;
-      }
-      print_to_file_path = argv[i + 1];
-      special_command_position = i;
-    }
+  /* If the below is correct, we have the command prepared. if not, then we can leave the function. */
+  if (prepare_command_redirection(cmd, &print_to_file, &print_to_file_path) < 0){
+    return -2;
   }
-  if (print_to_file){
-    argv[special_command_position] = NULL;
-    cmd->argc = special_command_position;
-    argc = cmd->argc;
-  }
+  char *command = cmd->argv[0];
   if (is_builtin_cmd(command)){
     if (!setup_redirection(print_to_file, print_to_file_path, &saved_fd, &target_fd)){
       perror("setup_redirection");
@@ -1045,6 +1063,11 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
     }
     if (pid == 0){
       char candidate[4096];
+      int print_to_file = 0;
+      char *print_to_file_path = NULL;
+      if (prepare_command_redirection(&pl->cmds[i], &print_to_file, &print_to_file_path) < 0){
+        _exit(2);
+      }
       if (i > 0){
         if (dup2(pipes[i - 1][0], STDIN_FILENO) == -1){
           perror("dup2 stdin");
@@ -1061,6 +1084,12 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
         close(pipes[k][0]);
         close(pipes[k][1]);
       }
+      if (print_to_file){
+        if (!setup_child_redirection(print_to_file, print_to_file_path)) {
+          perror("redirection");
+          _exit(1);
+        }
+      }
       if (is_builtin_cmd(pl->cmds[i].argv[0])){
         int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
         if (rc == SHELL_EXIT_REQUESTED){
@@ -1069,21 +1098,20 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
           _exit(rc);
         }
       }
-        exec_external_command(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
-      }
-      pids[i] = pid;
+      exec_external_command(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
     }
-    for (int i = 0; i < npipes; i++) {
-      close(pipes[i][0]);
-      close(pipes[i][1]);
-    }
-    for (int i = 0; i < ncmds; i++) {
-      int status;
-      waitpid(pids[i], &status, 0);
-    }
-    return 0;
+    pids[i] = pid; /* <--- Parent process continues from here after fork() */
   }
-
+  for (int i = 0; i < npipes; i++) {
+    close(pipes[i][0]);
+    close(pipes[i][1]);
+  }
+  for (int i = 0; i < ncmds; i++) {
+    int status;
+    waitpid(pids[i], &status, 0);
+  }
+  return 0;
+}
 
 /* Main Function */
 int main(){
