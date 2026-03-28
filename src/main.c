@@ -41,6 +41,18 @@ const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd", "history"}; 
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
+/* Helpers to manage ArrowUP and ArrowDOWN */
+int handle_arrow_up(){
+  printf("You pressed Arrow Up\n");
+  return 0;
+}
+
+int handle_arrow_down(){
+  printf("You pressed Arrow Down\n");
+  return 0;
+}
+
+/* Hlepers to manage the history */
 void free_history(History *h){
   for (int i = 0; i < h->count; i++){
     free(h->entries[i]);
@@ -69,6 +81,34 @@ int save_history(History *h, const char *user_input){
   memcpy(h->entries[h->count], user_input, len);
   h->count++;
   return 0;
+}
+
+void print_history(const History *h, char **argv){
+  if (!h) {
+    fprintf(stderr, "history: no history available\n");
+    return;
+  }
+  int n = h->count;
+  if (argv[1] != NULL) {
+    char *end;
+    long val = strtol(argv[1], &end, 10); /* <--- this is to avoid atoi() functon */
+    if (*argv[1] == '\0' || *end != '\0' || val <= 0 || val > INT_MAX) {
+      fprintf(stderr, "history: invalid argument\n");
+      return;
+    }
+    n = (int)val;
+    if (n <= 0){
+      fprintf(stderr, "history: invalid argument\n");
+      return;
+    }
+    if (n > h->count){
+      n = h->count;
+    }
+  }
+  int start = h->count - n;
+  for (int i = start; i < h->count; i++){
+    printf("\t%d %s\n", i+1, h->entries[i]);
+  }
 }
 
 /* Helper to avoid that multiple /// are displayed when in reality we want just one / (try echo ./// and it will not give a problem).
@@ -730,6 +770,25 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
       }
       continue;
     }
+    if (c == 27){
+      /* 
+      The below is because when Arrow UP or Arrow DOWN is used, the combination received is 27 X Y, with 
+      X a value '[' and Y either 'A' (ArrowUP) or 'B'(ArrowDOWN)
+      */
+      char seq[2];
+      ssize_t n1 = read(STDIN_FILENO, &seq[0], 1);
+      ssize_t n2 = read(STDIN_FILENO, &seq[1], 1);
+      if (n1 == 1 && n2 == 1 && seq[0] == '['){
+        if (seq[1] == 'A'){
+          handle_arrow_up();
+        } else if (seq[1 == 'B']){
+          handle_arrow_down();
+        }
+      }
+      tab_pressed_once = 0;
+      last_tab_buf[0] = '\0';
+      continue;
+    }
     if (c >= 32 && c < 127){
       if (len + 1 < cap){
         buf[len++] = c;
@@ -940,7 +999,7 @@ As I have worked on the situations, I realised that this piece of logic will be 
 in the child once pipelines are in place. So I decided to isolate it and keep it unique, 
 simlifying debug and "maintenance".
 */
-int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size, History *h){
   if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]) {
     return -1;
   }
@@ -949,6 +1008,15 @@ int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *ca
   char *command = argv[0];
   if (strcmp(command , "exit") == 0){
     return SHELL_EXIT_REQUESTED;
+  }
+  if (strcmp(command, "history") == 0){
+    if (argc <= 2){
+      print_history(h, argv);
+      return 0;
+    } else {
+      fprintf(stderr, "history: too many arguments\n");
+      return -1;
+    }
   }
   if (strcmp(command, "echo") == 0) {
     for (int i = 1; i < argc; i++) {
@@ -985,11 +1053,11 @@ int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *ca
       dest = getenv("HOME");
     }
     if (!dest) {
-      printf("cd: HOME not set\n");
+      fprintf(stderr,"cd: HOME not set\n");
       return -5;
     }
     if (chdir(dest) != 0) {
-      printf("cd: %s: No such file or directory\n", dest);
+      fprintf(stderr,"cd: %s: No such file or directory\n", dest);
     }
     return 0;
   }
@@ -1026,7 +1094,7 @@ void exec_external_command(Command *cmd, const char *path_env, int path_exist, c
 /* This was the original main() function. It becomes a stand alone method as we moved to pipelines.
 With all frankness, it is not the complete main(). Few things have been left there, but hte majority
 the logic is now here.    */
-int execute_single_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+int execute_single_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size, History *h){
   if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]){
     return -1;
   }
@@ -1046,7 +1114,7 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
       perror("setup_redirection");
       return -3;
     }
-    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size);
+    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size, h);
     restore_redirection(&saved_fd, target_fd);
     return rc;
   }
@@ -1074,7 +1142,7 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
 }
 
 /* Function for executing pipelines */
-int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
+int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist, History *h){
   if (!pl || !pl->cmds || pl->count <= 1){
     return -1;
   }
@@ -1128,7 +1196,7 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
         }
       }
       if (is_builtin_cmd(pl->cmds[i].argv[0])){
-        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
+        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate), h);
         if (rc == SHELL_EXIT_REQUESTED){
           _exit(0);
         } else {
@@ -1210,9 +1278,9 @@ int main(){
     }
     int rc = 0;
     if (pl.count == 1){
-      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate));
+      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate), &history);
     } else {
-      rc = execute_multi_command(&pl, path_env, path_exist);
+      rc = execute_multi_command(&pl, path_env, path_exist, &history);
     }
     free_pipeline(&pl);
     free_argv(argv, BUFFER);
