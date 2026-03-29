@@ -850,7 +850,7 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
       if (n1 == 1 && n2 == 1 && seq[0] == '['){
         if (seq[1] == 'A'){
           handle_arrow_up(buf, cap, &len, h, &h_index, &nav_history, draft_buf, sizeof(draft_buf), "$ ");
-        } else if (seq[1 == 'B']){
+        } else if (seq[1] == 'B'){
           handle_arrow_down(buf, cap, &len, h, &h_index, &nav_history, draft_buf, "$ ");
         }
       }
