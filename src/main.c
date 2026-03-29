@@ -101,11 +101,10 @@ int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_ind
   if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
     return -1;
   }
-  if (h->count == 0){
-    return -2;
-  }
+  if (!(*nav_history)) return -2;
+  if (h->count == 0) return -3;
   size_t old_len = *len;
-  if (!(*h_index < h->count - 1)){
+  if (*h_index < h->count - 1){
     (*h_index)++;
     replace_buffer(buf,cap,len,h->entries[*h_index]);
   } else{
@@ -839,6 +838,16 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
       }
       continue;
     }
+    if (c >= 32 && c < 127){
+      if (len + 1 < cap){
+        buf[len++] = c;
+        buf[len] = '\0';
+        write(STDOUT_FILENO, &c, 1);
+      }
+      tab_pressed_once = 0;
+      last_tab_buf[0] = '\0';
+      continue;
+    }
     if (c == 27){
       /* 
       The below is because when Arrow UP or Arrow DOWN is used, the combination received is 27 X Y, with 
@@ -853,16 +862,6 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
         } else if (seq[1] == 'B'){
           handle_arrow_down(buf, cap, &len, h, &h_index, &nav_history, draft_buf, "$ ");
         }
-      }
-      tab_pressed_once = 0;
-      last_tab_buf[0] = '\0';
-      continue;
-    }
-    if (c >= 32 && c < 127){
-      if (len + 1 < cap){
-        buf[len++] = c;
-        buf[len] = '\0';
-        write(STDOUT_FILENO, &c, 1);
       }
       tab_pressed_once = 0;
       last_tab_buf[0] = '\0';
