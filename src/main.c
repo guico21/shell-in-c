@@ -41,6 +41,82 @@ const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd", "history"}; 
 const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
+/* Helpers to manage ArrowUP and ArrowDOWN */
+void redraw_input_line(const char *prompt, const char *buf, size_t old_len, size_t new_len){
+  /*
+  We are using write because we are n raw mode due to termios. The input is not longer
+  line buffered, so we are controlling every character. In this scenario, printf (or similar)
+  do not work becuase we are no longer in the stdio layer.
+  */
+  write(STDOUT_FILENO, "\r", 1);
+  write(STDOUT_FILENO, prompt, strlen(prompt));
+  write(STDOUT_FILENO, buf, new_len);
+  if (old_len > new_len){
+    size_t extra = old_len - new_len;
+    for (size_t i = 0; i < extra; i++){
+      write(STDOUT_FILENO, " ", 1);
+    }
+    for (size_t i = 0; i < extra; i++){
+      write(STDOUT_FILENO, "\b", 1);
+    }
+  }
+}
+
+void replace_buffer(char *buf, size_t cap, size_t *len, const char *src){
+  /* This function swap two buffers, namely puts src into buf. */
+  if (!buf || !len || !src || cap ==0){
+    return;
+  }
+  size_t n = strlen(src);
+  if (n >= cap){
+    n = cap - 1;
+  }
+  memcpy(buf, src, n);
+  buf[n] = '\0';
+  *len = n;
+}
+
+int handle_arrow_up(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, size_t draft_cap, const char *prompt){
+  if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
+    return -1;
+  }
+  if (h->count == 0){
+    return -2;
+  }
+  size_t old_len = *len;
+  if (!(*nav_history)){
+    strncpy(draft_buf, buf, draft_cap - 1); /* strcpy does not guarantee NULL termination */
+    draft_buf[draft_cap - 1] = '\0';
+    *nav_history = 1;
+    *h_index = h->count -1;
+  } else if (*h_index > 0){
+    (*h_index)--;
+  }
+  replace_buffer(buf,cap,len,h->entries[*h_index]);
+  redraw_input_line(prompt, buf, old_len, *len);
+  return 1;
+}
+
+int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, const char *prompt){
+  if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
+    return -1;
+  }
+  if (!(*nav_history)) return -2;
+  if (h->count == 0) return -3;
+  size_t old_len = *len;
+  if (*h_index < h->count - 1){
+    (*h_index)++;
+    replace_buffer(buf,cap,len,h->entries[*h_index]);
+  } else{
+    *h_index = h->count;
+    *nav_history = 0;
+    replace_buffer(buf,cap,len,draft_buf);
+  }
+  redraw_input_line(prompt, buf, old_len, *len);
+  return 1;
+}
+
+/* Hlepers to manage the history */
 void free_history(History *h){
   for (int i = 0; i < h->count; i++){
     free(h->entries[i]);
@@ -69,6 +145,34 @@ int save_history(History *h, const char *user_input){
   memcpy(h->entries[h->count], user_input, len);
   h->count++;
   return 0;
+}
+
+void print_history(const History *h, char **argv){
+  if (!h) {
+    fprintf(stderr, "history: no history available\n");
+    return;
+  }
+  int n = h->count;
+  if (argv[1] != NULL) {
+    char *end;
+    long val = strtol(argv[1], &end, 10); /* <--- this is to avoid atoi() functon */
+    if (*argv[1] == '\0' || *end != '\0' || val <= 0 || val > INT_MAX) {
+      fprintf(stderr, "history: invalid argument\n");
+      return;
+    }
+    n = (int)val;
+    if (n <= 0){
+      fprintf(stderr, "history: invalid argument\n");
+      return;
+    }
+    if (n > h->count){
+      n = h->count;
+    }
+  }
+  int start = h->count - n;
+  for (int i = start; i < h->count; i++){
+    printf("\t%d %s\n", i+1, h->entries[i]);
+  }
 }
 
 /* Helper to avoid that multiple /// are displayed when in reality we want just one / (try echo ./// and it will not give a problem).
@@ -681,7 +785,7 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   return handle_tab_path(buf, len, cap, token_offset, token_len, show_all_matches);
 }
 
-int read_command_line(char *buf, size_t cap, const char *path_env){
+int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
   if (buf == NULL || cap == 0){
     return -1;
   }
@@ -691,6 +795,10 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
   int tab_pressed_once = 0;
   char last_tab_buf[cap];
   last_tab_buf[0] = '\0';
+
+  int h_index = (h != NULL) ? h->count : 0;
+  int nav_history = 0;
+  char draft_buf[cap];
 
   while(1){
     char c;
@@ -735,6 +843,25 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
         buf[len++] = c;
         buf[len] = '\0';
         write(STDOUT_FILENO, &c, 1);
+      }
+      tab_pressed_once = 0;
+      last_tab_buf[0] = '\0';
+      continue;
+    }
+    if (c == 27){
+      /* 
+      The below is because when Arrow UP or Arrow DOWN is used, the combination received is 27 X Y, with 
+      X a value '[' and Y either 'A' (ArrowUP) or 'B'(ArrowDOWN)
+      */
+      char seq[2];
+      ssize_t n1 = read(STDIN_FILENO, &seq[0], 1);
+      ssize_t n2 = read(STDIN_FILENO, &seq[1], 1);
+      if (n1 == 1 && n2 == 1 && seq[0] == '['){
+        if (seq[1] == 'A'){
+          handle_arrow_up(buf, cap, &len, h, &h_index, &nav_history, draft_buf, sizeof(draft_buf), "$ ");
+        } else if (seq[1] == 'B'){
+          handle_arrow_down(buf, cap, &len, h, &h_index, &nav_history, draft_buf, "$ ");
+        }
       }
       tab_pressed_once = 0;
       last_tab_buf[0] = '\0';
@@ -940,7 +1067,7 @@ As I have worked on the situations, I realised that this piece of logic will be 
 in the child once pipelines are in place. So I decided to isolate it and keep it unique, 
 simlifying debug and "maintenance".
 */
-int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size, History *h){
   if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]) {
     return -1;
   }
@@ -949,6 +1076,15 @@ int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *ca
   char *command = argv[0];
   if (strcmp(command , "exit") == 0){
     return SHELL_EXIT_REQUESTED;
+  }
+  if (strcmp(command, "history") == 0){
+    if (argc <= 2){
+      print_history(h, argv);
+      return 0;
+    } else {
+      fprintf(stderr, "history: too many arguments\n");
+      return -1;
+    }
   }
   if (strcmp(command, "echo") == 0) {
     for (int i = 1; i < argc; i++) {
@@ -985,11 +1121,11 @@ int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *ca
       dest = getenv("HOME");
     }
     if (!dest) {
-      printf("cd: HOME not set\n");
+      fprintf(stderr,"cd: HOME not set\n");
       return -5;
     }
     if (chdir(dest) != 0) {
-      printf("cd: %s: No such file or directory\n", dest);
+      fprintf(stderr,"cd: %s: No such file or directory\n", dest);
     }
     return 0;
   }
@@ -1026,7 +1162,7 @@ void exec_external_command(Command *cmd, const char *path_env, int path_exist, c
 /* This was the original main() function. It becomes a stand alone method as we moved to pipelines.
 With all frankness, it is not the complete main(). Few things have been left there, but hte majority
 the logic is now here.    */
-int execute_single_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
+int execute_single_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size, History *h){
   if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]){
     return -1;
   }
@@ -1046,7 +1182,7 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
       perror("setup_redirection");
       return -3;
     }
-    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size);
+    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size, h);
     restore_redirection(&saved_fd, target_fd);
     return rc;
   }
@@ -1074,7 +1210,7 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
 }
 
 /* Function for executing pipelines */
-int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
+int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist, History *h){
   if (!pl || !pl->cmds || pl->count <= 1){
     return -1;
   }
@@ -1128,7 +1264,7 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
         }
       }
       if (is_builtin_cmd(pl->cmds[i].argv[0])){
-        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
+        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate), h);
         if (rc == SHELL_EXIT_REQUESTED){
           _exit(0);
         } else {
@@ -1181,7 +1317,7 @@ int main(){
     setbuf(stdout, NULL);   /* Flush after every print */
     printf("$ ");
     // The function below allows a full string to be read, including the ending caracter '\n'
-    int nread = read_command_line(user_input, sizeof(user_input), path_env);
+    int nread = read_command_line(user_input, sizeof(user_input), path_env, &history);
     if (nread < 0){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
@@ -1210,9 +1346,9 @@ int main(){
     }
     int rc = 0;
     if (pl.count == 1){
-      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate));
+      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate), &history);
     } else {
-      rc = execute_multi_command(&pl, path_env, path_exist);
+      rc = execute_multi_command(&pl, path_env, path_exist, &history);
     }
     free_pipeline(&pl);
     free_argv(argv, BUFFER);
