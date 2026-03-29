@@ -42,14 +42,79 @@ const char special_chars[] = {'\"', '$', '\'', '\\'};
 const char *terminal_to_file_commands[] = {">", "1>", "2>", ">>", "1>>", "2>>"};
 
 /* Helpers to manage ArrowUP and ArrowDOWN */
-int handle_arrow_up(){
-  printf("You pressed Arrow Up\n");
-  return 0;
+void redraw_input_line(const char *prompt, const char *buf, size_t old_len, size_t new_len){
+  /*
+  We are using write because we are n raw mode due to termios. The input is not longer
+  line buffered, so we are controlling every character. In this scenario, printf (or similar)
+  do not work becuase we are no longer in the stdio layer.
+  */
+  write(STDOUT_FILENO, "\r", 1);
+  write(STDOUT_FILENO, prompt, strlen(prompt));
+  write(STDOUT_FILENO, buf, new_len);
+  if (old_len > new_len){
+    size_t extra = old_len - new_len;
+    for (size_t i = 0; i < extra; i++){
+      write(STDOUT_FILENO, " ", 1);
+    }
+    for (size_t i = 0; i < extra; i++){
+      write(STDOUT_FILENO, "\b", 1);
+    }
+  }
 }
 
-int handle_arrow_down(){
-  printf("You pressed Arrow Down\n");
-  return 0;
+void replace_buffer(char *buf, size_t cap, size_t *len, const char *src){
+  /* This function swap two buffers, namely puts src into buf. */
+  if (!buf || !len || !src || cap ==0){
+    return;
+  }
+  size_t n = strlen(src);
+  if (n >= cap){
+    n = cap - 1;
+  }
+  memcpy(buf, src, n);
+  buf[n] = '\0';
+  *len = n;
+}
+
+int handle_arrow_up(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, size_t draft_cap, const char *prompt){
+  if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
+    return -1;
+  }
+  if (h->count == 0){
+    return -2;
+  }
+  size_t old_len = *len;
+  if (!(*nav_history)){
+    strncpy(draft_buf, buf, draft_cap - 1); /* strcpy does not guarantee NULL termination */
+    draft_buf[draft_cap - 1] = '\0';
+    *nav_history = 1;
+    *h_index = h->count -1;
+  } else if (*h_index > 0){
+    (*h_index)--;
+  }
+  replace_buffer(buf,cap,len,h->entries[*h_index]);
+  redraw_input_line(prompt, buf, old_len, *len);
+  return 1;
+}
+
+int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, const char *prompt){
+  if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
+    return -1;
+  }
+  if (h->count == 0){
+    return -2;
+  }
+  size_t old_len = *len;
+  if (!(*h_index < h->count - 1)){
+    (*h_index)++;
+    replace_buffer(buf,cap,len,h->entries[*h_index]);
+  } else{
+    *h_index = h->count;
+    *nav_history = 0;
+    replace_buffer(buf,cap,len,draft_buf);
+  }
+  redraw_input_line(prompt, buf, old_len, *len);
+  return 1;
 }
 
 /* Hlepers to manage the history */
@@ -721,7 +786,7 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   return handle_tab_path(buf, len, cap, token_offset, token_len, show_all_matches);
 }
 
-int read_command_line(char *buf, size_t cap, const char *path_env){
+int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
   if (buf == NULL || cap == 0){
     return -1;
   }
@@ -731,6 +796,10 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
   int tab_pressed_once = 0;
   char last_tab_buf[cap];
   last_tab_buf[0] = '\0';
+
+  int h_index = (h != NULL) ? h->count : 0;
+  int nav_history = 0;
+  char draft_buf[cap];
 
   while(1){
     char c;
@@ -780,9 +849,9 @@ int read_command_line(char *buf, size_t cap, const char *path_env){
       ssize_t n2 = read(STDIN_FILENO, &seq[1], 1);
       if (n1 == 1 && n2 == 1 && seq[0] == '['){
         if (seq[1] == 'A'){
-          handle_arrow_up();
+          handle_arrow_up(buf, cap, &len, h, &h_index, &nav_history, draft_buf, sizeof(draft_buf), "$ ");
         } else if (seq[1 == 'B']){
-          handle_arrow_down();
+          handle_arrow_down(buf, cap, &len, h, &h_index, &nav_history, draft_buf, "$ ");
         }
       }
       tab_pressed_once = 0;
@@ -1249,7 +1318,7 @@ int main(){
     setbuf(stdout, NULL);   /* Flush after every print */
     printf("$ ");
     // The function below allows a full string to be read, including the ending caracter '\n'
-    int nread = read_command_line(user_input, sizeof(user_input), path_env);
+    int nread = read_command_line(user_input, sizeof(user_input), path_env, &history);
     if (nread < 0){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
