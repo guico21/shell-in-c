@@ -108,13 +108,12 @@ int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_ind
   if (*h_index < h->count - 1){
     (*h_index)++;
     replace_buffer(buf,cap,len,h->entries[*h_index]);
-    *cursor = *len;
   } else{
     *h_index = h->count;
     *nav_history = 0;
     replace_buffer(buf,cap,len,draft_buf);
-    *cursor = *len;
   }
+  *cursor = *len;
   redraw_input_line(prompt, buf, old_len, *len);
   return 1;
 }
