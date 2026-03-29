@@ -855,11 +855,13 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
     }
     if (c == '\t') {
       int show_all_matches = 0;
+      size_t old_len = len;
       if (tab_pressed_once && strcmp(buf, last_tab_buf) == 0){
         show_all_matches = 1;
       }
       handle_tab(buf, &len, cap, builtin_cmds, cmd_count, path_env, show_all_matches);
       cursor = len;
+      redraw_input_line("$ ", buf, old_len, len);
       if (!show_all_matches){
         strncpy(last_tab_buf, buf, cap-1);
         last_tab_buf[cap-1]= '\0';
