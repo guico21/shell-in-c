@@ -76,7 +76,7 @@ void replace_buffer(char *buf, size_t cap, size_t *len, const char *src){
   *len = n;
 }
 
-int handle_arrow_up(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, size_t draft_cap, const char *prompt){
+int handle_arrow_up(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, size_t draft_cap, size_t *cursor, const char *prompt){
   if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
     return -1;
   }
@@ -93,11 +93,12 @@ int handle_arrow_up(char *buf, size_t cap, size_t *len, History *h, int *h_index
     (*h_index)--;
   }
   replace_buffer(buf,cap,len,h->entries[*h_index]);
+  *cursor = *len;
   redraw_input_line(prompt, buf, old_len, *len);
   return 1;
 }
 
-int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, const char *prompt){
+int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, size_t *cursor, const char *prompt){
   if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
     return -1;
   }
@@ -107,12 +108,35 @@ int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_ind
   if (*h_index < h->count - 1){
     (*h_index)++;
     replace_buffer(buf,cap,len,h->entries[*h_index]);
+    *cursor = *len;
   } else{
     *h_index = h->count;
     *nav_history = 0;
     replace_buffer(buf,cap,len,draft_buf);
+    *cursor = *len;
   }
   redraw_input_line(prompt, buf, old_len, *len);
+  return 1;
+}
+
+/* Helpers for managing ArrowLEFT and ArrowRIGHT */
+int handle_arrow_left(size_t *cursor){
+  if (!cursor) return -1;
+  if (*cursor == 0) return -2;
+  (*cursor)--;
+  if(write(STDOUT_FILENO, "\x1b[D", 3) < 0){ /* means error */
+    return -3;
+  }
+  return 1;
+}
+
+int handle_arrow_right(size_t *cursor, int len){
+  if (!cursor) return -1;
+  if (*cursor >= len) return -2;
+  (*cursor)++;
+  if(write(STDOUT_FILENO, "\x1b[C", 3) < 0){
+    return -3;
+  }
   return 1;
 }
 
@@ -791,6 +815,7 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
   }
   size_t cmd_count = sizeof(builtin_cmds) / sizeof(builtin_cmds[0]);
   size_t len = 0;
+  size_t cursor = 0;
   buf[0] = '\0';
   int tab_pressed_once = 0;
   char last_tab_buf[cap];
@@ -799,6 +824,7 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
   int h_index = (h != NULL) ? h->count : 0;
   int nav_history = 0;
   char draft_buf[cap];
+  draft_buf[0] = '\0';
 
   while(1){
     char c;
@@ -812,10 +838,17 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
       return (int)len;
     }
     if (c == 127 || c == '\b'){
-      if (len > 0){
+      if (cursor > 0){
+        memmove(&buf[cursor-1], &buf[cursor], len-cursor+1);
+        cursor--;
         len --;
-        buf[len] = '\0';
-        write(STDOUT_FILENO, "\b \b", 3);
+        write(STDOUT_FILENO, "\x1b[D", 3);
+        write(STDOUT_FILENO, &buf[cursor], len - cursor);
+        write(STDOUT_FILENO, " ", 1);
+        size_t move_back = (len - cursor) + 1;
+        for (size_t i = 0; i < move_back; i++){
+          write(STDOUT_FILENO, "\x1b[D", 3);
+        }
       }
       tab_pressed_once = 0;
       last_tab_buf[0] = '\0';
@@ -827,7 +860,7 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
         show_all_matches = 1;
       }
       handle_tab(buf, &len, cap, builtin_cmds, cmd_count, path_env, show_all_matches);
-
+      cursor = len;
       if (!show_all_matches){
         strncpy(last_tab_buf, buf, cap-1);
         last_tab_buf[cap-1]= '\0';
@@ -840,9 +873,23 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
     }
     if (c >= 32 && c < 127){
       if (len + 1 < cap){
-        buf[len++] = c;
-        buf[len] = '\0';
-        write(STDOUT_FILENO, &c, 1);
+        if (cursor == len){
+          buf[cursor] = c;
+          cursor++;
+          len++;
+          buf[len] = '\0';
+          write(STDOUT_FILENO, &c, 1);
+        } else {
+          memmove(&buf[cursor + 1], &buf[cursor], len - cursor + 1);
+          buf[cursor] = c;
+          cursor++;
+          len++;
+          write(STDOUT_FILENO, &buf[cursor-1], len - (cursor - 1));
+          size_t tail = len - cursor;
+          for (size_t i = 0; i < tail; i++){
+            write(STDOUT_FILENO, "\x1b[D", 3);
+          }
+        }
       }
       tab_pressed_once = 0;
       last_tab_buf[0] = '\0';
@@ -857,10 +904,22 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
       ssize_t n1 = read(STDIN_FILENO, &seq[0], 1);
       ssize_t n2 = read(STDIN_FILENO, &seq[1], 1);
       if (n1 == 1 && n2 == 1 && seq[0] == '['){
-        if (seq[1] == 'A'){
-          handle_arrow_up(buf, cap, &len, h, &h_index, &nav_history, draft_buf, sizeof(draft_buf), "$ ");
-        } else if (seq[1] == 'B'){
-          handle_arrow_down(buf, cap, &len, h, &h_index, &nav_history, draft_buf, "$ ");
+        switch (seq[1])
+        {
+          case 'A':
+            handle_arrow_up(buf, cap, &len, h, &h_index, &nav_history, draft_buf, sizeof(draft_buf), &cursor, "$ ");
+            break;
+          case 'B':
+            handle_arrow_down(buf, cap, &len, h, &h_index, &nav_history, draft_buf, &cursor, "$ ");
+            break;
+          case 'D':
+            handle_arrow_left(&cursor);
+            break;
+          case 'C':
+            handle_arrow_right(&cursor, len);
+            break;
+          default:
+            break;
         }
       }
       tab_pressed_once = 0;
