@@ -41,6 +41,9 @@ Then to execute it:
 `./main`
 Pretty easy (and boring).
 
+## Folder structure
+Pretty easy: go to `/src`. In there you will have the `main.c` file. Everything is in there.
+
 ## Ok, but have you used AI?
 The project is mostly (oops!) written by me, except for a couple of istances where I could not get bothered to refactor 2 functions with a different variable name. In that case, I used an LLM copilot to quickly change them for me.
 
