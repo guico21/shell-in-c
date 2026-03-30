@@ -13,7 +13,7 @@
 
 #define BUFFER 16
 #define SHELL_EXIT_REQUESTED 99
-#define HISTORY_CAPACITY 16
+#define HISTORY_CAPACITY 1024
 
 typedef struct{
   char text[PATH_MAX];
@@ -35,13 +35,14 @@ typedef struct {
 typedef struct {
     char **entries;
     int count;
+    int capacity;
 } History;
 
 /* 
 global hisotry variable. this is to ensure we can have a single varibale accssable by the whole functions avoiding
 multi file design (hence only a single file).
 */
-static History history = {NULL, 0};
+static History history = {NULL, 0, 0};
 
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd", "history"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
@@ -156,24 +157,36 @@ void free_history(){
 }
 
 int save_history(const char *user_input){
-  if (history.count >= HISTORY_CAPACITY){
-    int capacity = HISTORY_CAPACITY * 2;
-    char **tmp = realloc(history.entries, capacity * sizeof(char *));
+  if (!user_input){
+    return -1;
+  }
+  if (history.capacity == 0){
+    history.capacity = HISTORY_CAPACITY;
+    history.entries = malloc((size_t)history.capacity * sizeof(char *));
+    if (!history.entries){
+      perror("malloc");
+      history.capacity = 0;
+      return -1;
+    }
+  } else if (history.count >= history.capacity){
+    int new_capacity = history.capacity * 2;
+    char **tmp = realloc(history.entries, (size_t)new_capacity * sizeof(char *));
     if (!tmp){
       perror("realloc");
       return -1;
     }
     history.entries = tmp;
+    history.capacity = new_capacity;
   }
   size_t len = strlen(user_input) + 1;
   history.entries[history.count] = malloc(len);
   if (!history.entries[history.count]){
     perror("malloc");
-    return 1;
+    return -1;
   }
   memcpy(history.entries[history.count], user_input, len);
   history.count++;
-  return 0;
+  return 1;
 }
 
 void print_history(char **argv){
