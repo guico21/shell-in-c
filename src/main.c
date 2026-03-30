@@ -13,7 +13,7 @@
 
 #define BUFFER 16
 #define SHELL_EXIT_REQUESTED 99
-#define HISTORY_CAPACITY 16
+#define HISTORY_CAPACITY 1024
 
 typedef struct{
   char text[PATH_MAX];
@@ -35,7 +35,15 @@ typedef struct {
 typedef struct {
     char **entries;
     int count;
+    int capacity;
 } History;
+
+/* 
+global hisotry variable. this is to ensure we can have a single varibale accssable by the whole functions avoiding
+multi file design (hence only a single file).
+*/
+static History history = {NULL, 0, 0};
+static int history_append_cursor = 0;
 
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd", "history"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
@@ -76,11 +84,11 @@ void replace_buffer(char *buf, size_t cap, size_t *len, const char *src){
   *len = n;
 }
 
-int handle_arrow_up(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, size_t draft_cap, size_t *cursor, const char *prompt){
-  if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
+int handle_arrow_up(char *buf, size_t cap, size_t *len, int *h_index, int *nav_history, char *draft_buf, size_t draft_cap, size_t *cursor, const char *prompt){
+  if (!buf || !len || !h_index || !nav_history || !draft_buf || !prompt) {
     return -1;
   }
-  if (h->count == 0){
+  if (history.count == 0){
     return -2;
   }
   size_t old_len = *len;
@@ -88,28 +96,28 @@ int handle_arrow_up(char *buf, size_t cap, size_t *len, History *h, int *h_index
     strncpy(draft_buf, buf, draft_cap - 1); /* strcpy does not guarantee NULL termination */
     draft_buf[draft_cap - 1] = '\0';
     *nav_history = 1;
-    *h_index = h->count -1;
+    *h_index = history.count -1;
   } else if (*h_index > 0){
     (*h_index)--;
   }
-  replace_buffer(buf,cap,len,h->entries[*h_index]);
+  replace_buffer(buf,cap,len,history.entries[*h_index]);
   *cursor = *len;
   redraw_input_line(prompt, buf, old_len, *len);
   return 1;
 }
 
-int handle_arrow_down(char *buf, size_t cap, size_t *len, History *h, int *h_index, int *nav_history, char *draft_buf, size_t *cursor, const char *prompt){
-  if (!buf || !len || !h || !h_index || !nav_history || !draft_buf || !prompt) {
+int handle_arrow_down(char *buf, size_t cap, size_t *len, int *h_index, int *nav_history, char *draft_buf, size_t *cursor, const char *prompt){
+  if (!buf || !len || !h_index || !nav_history || !draft_buf || !prompt) {
     return -1;
   }
   if (!(*nav_history)) return -2;
-  if (h->count == 0) return -3;
+  if (history.count == 0) return -3;
   size_t old_len = *len;
-  if (*h_index < h->count - 1){
+  if (*h_index < history.count - 1){
     (*h_index)++;
-    replace_buffer(buf,cap,len,h->entries[*h_index]);
+    replace_buffer(buf,cap,len,history.entries[*h_index]);
   } else{
-    *h_index = h->count;
+    *h_index = history.count;
     *nav_history = 0;
     replace_buffer(buf,cap,len,draft_buf);
   }
@@ -140,42 +148,51 @@ int handle_arrow_right(size_t *cursor, int len){
 }
 
 /* Hlepers to manage the history */
-void free_history(History *h){
-  for (int i = 0; i < h->count; i++){
-    free(h->entries[i]);
+void free_history(){
+  for (int i = 0; i < history.count; i++){
+    free(history.entries[i]);
   }
-  free(h->entries);
-  h->entries = NULL;
-  h->count = 0;
+  free(history.entries);
+  history.entries = NULL;
+  history.count = 0;
+  history.capacity = 0;
 }
 
-int save_history(History *h, const char *user_input){
-  if (h->count >= HISTORY_CAPACITY){
-    int capacity = HISTORY_CAPACITY * 2;
-    char **tmp = realloc(h->entries, capacity * sizeof(char *));
+int save_history(const char *user_input){
+  if (!user_input){
+    return -1;
+  }
+  if (history.capacity == 0){
+    history.capacity = HISTORY_CAPACITY;
+    history.entries = malloc((size_t)history.capacity * sizeof(char *));
+    if (!history.entries){
+      perror("malloc");
+      history.capacity = 0;
+      return -1;
+    }
+  } else if (history.count >= history.capacity){
+    int new_capacity = history.capacity * 2;
+    char **tmp = realloc(history.entries, (size_t)new_capacity * sizeof(char *));
     if (!tmp){
       perror("realloc");
       return -1;
     }
-    h->entries = tmp;
+    history.entries = tmp;
+    history.capacity = new_capacity;
   }
   size_t len = strlen(user_input) + 1;
-  h->entries[h->count] = malloc(len);
-  if (!h->entries[h->count]){
+  history.entries[history.count] = malloc(len);
+  if (!history.entries[history.count]){
     perror("malloc");
-    return 1;
+    return -1;
   }
-  memcpy(h->entries[h->count], user_input, len);
-  h->count++;
-  return 0;
+  memcpy(history.entries[history.count], user_input, len);
+  history.count++;
+  return 1;
 }
 
-void print_history(const History *h, char **argv){
-  if (!h) {
-    fprintf(stderr, "history: no history available\n");
-    return;
-  }
-  int n = h->count;
+void print_history(char **argv){
+  int n = history.count;
   if (argv[1] != NULL) {
     char *end;
     long val = strtol(argv[1], &end, 10); /* <--- this is to avoid atoi() functon */
@@ -188,14 +205,98 @@ void print_history(const History *h, char **argv){
       fprintf(stderr, "history: invalid argument\n");
       return;
     }
-    if (n > h->count){
-      n = h->count;
+    if (n > history.count){
+      n = history.count;
     }
   }
-  int start = h->count - n;
-  for (int i = start; i < h->count; i++){
-    printf("\t%d %s\n", i+1, h->entries[i]);
+  int start = history.count - n;
+  for (int i = start; i < history.count; i++){
+    printf("\t%d %s\n", i+1, history.entries[i]);
   }
+}
+
+int write_history_to_file(const char *file){
+  if (!file){
+    return -1;
+  }
+  FILE *f = fopen(file, "w");
+  if (!f){
+    perror("file");
+    return -1;
+  }
+  for (int i = 0; i < history.count; i++){
+    if (fprintf(f, "%s\n", history.entries[i]) < 0){
+      perror("fprintf");
+      fclose(f);
+      return -1;
+    }
+  }
+  if (fclose(f) != 0){
+    perror("fclose");
+    return -1;
+  }
+  history_append_cursor = history.count;
+  return 1;
+}
+
+int append_history_to_file(const char *file){
+  /* This function and the above could have been merged into a single one, but for simplicity, I kept them unique */
+  if (!file){
+    return -1;
+  }
+  FILE *f = fopen(file, "a");
+  if (!f){
+    perror("file");
+    return -1;
+  }
+  for (int i = history_append_cursor; i < history.count; i++){
+    if (fprintf(f, "%s\n", history.entries[i]) < 0){
+      perror("fprintf");
+      fclose(f);
+      return -1;
+    }
+  }
+  if (fclose(f) != 0){
+    perror("fclose");
+    return -1;
+  }
+  history_append_cursor = history.count;
+  return 1;
+}
+
+int read_history_from_file(const char *file){
+  if (!file){
+    return -1;
+  }
+  FILE *f = fopen(file, "r");
+  if (!f){
+    perror("file");
+    return -1;
+  }
+  char *line = NULL;
+  size_t cap = 0;
+  ssize_t nread;
+  while ( (nread = getline(&line, &cap, f)) != -1){
+    if (nread >0 && line[nread-1] == '\n'){
+      line[nread - 1] = '\0';
+    }
+    if (save_history(line) != 1){
+      free(line);
+      fclose(f);
+      return -1;
+    }
+  }
+  free(line);
+  if (ferror(f)){
+    perror("getine");
+    fclose(f);
+    return -1;
+  }
+  if (fclose(f) != 0){
+    perror("fclose");
+    return -1;
+  }
+  return 1;
 }
 
 /* Helper to avoid that multiple /// are displayed when in reality we want just one / (try echo ./// and it will not give a problem).
@@ -808,7 +909,7 @@ int handle_tab(char *buf, size_t *len, size_t cap, const char **cmds, size_t cmd
   return handle_tab_path(buf, len, cap, token_offset, token_len, show_all_matches);
 }
 
-int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
+int read_command_line(char *buf, size_t cap, const char *path_env){
   if (buf == NULL || cap == 0){
     return -1;
   }
@@ -820,7 +921,7 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
   char last_tab_buf[cap];
   last_tab_buf[0] = '\0';
 
-  int h_index = (h != NULL) ? h->count : 0;
+  int h_index = history.count;
   int nav_history = 0;
   char draft_buf[cap];
   draft_buf[0] = '\0';
@@ -861,7 +962,8 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
       }
       handle_tab(buf, &len, cap, builtin_cmds, cmd_count, path_env, show_all_matches);
       cursor = len;
-      redraw_input_line("$ ", buf, old_len, len);
+      /* added the below redrawing cayse the cursor and len would otherwise be out of sync. */
+      redraw_input_line("$ ", buf, old_len, len); 
       if (!show_all_matches){
         strncpy(last_tab_buf, buf, cap-1);
         last_tab_buf[cap-1]= '\0';
@@ -908,10 +1010,10 @@ int read_command_line(char *buf, size_t cap, const char *path_env, History *h){
         switch (seq[1])
         {
           case 'A':
-            handle_arrow_up(buf, cap, &len, h, &h_index, &nav_history, draft_buf, sizeof(draft_buf), &cursor, "$ ");
+            handle_arrow_up(buf, cap, &len, &h_index, &nav_history, draft_buf, sizeof(draft_buf), &cursor, "$ ");
             break;
           case 'B':
-            handle_arrow_down(buf, cap, &len, h, &h_index, &nav_history, draft_buf, &cursor, "$ ");
+            handle_arrow_down(buf, cap, &len, &h_index, &nav_history, draft_buf, &cursor, "$ ");
             break;
           case 'D':
             handle_arrow_left(&cursor);
@@ -1127,7 +1229,7 @@ As I have worked on the situations, I realised that this piece of logic will be 
 in the child once pipelines are in place. So I decided to isolate it and keep it unique, 
 simlifying debug and "maintenance".
 */
-int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size, History *h){
+int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
   if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]) {
     return -1;
   }
@@ -1138,9 +1240,18 @@ int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *ca
     return SHELL_EXIT_REQUESTED;
   }
   if (strcmp(command, "history") == 0){
+    if (argc == 3 && strcmp(argv[1], "-r") == 0) {
+        return read_history_from_file(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "-w") == 0) {
+        return write_history_to_file(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "-a") == 0) {
+        return append_history_to_file(argv[2]);
+    }
     if (argc <= 2){
-      print_history(h, argv);
-      return 0;
+      print_history(argv);
+      return 1;
     } else {
       fprintf(stderr, "history: too many arguments\n");
       return -1;
@@ -1222,7 +1333,7 @@ void exec_external_command(Command *cmd, const char *path_env, int path_exist, c
 /* This was the original main() function. It becomes a stand alone method as we moved to pipelines.
 With all frankness, it is not the complete main(). Few things have been left there, but hte majority
 the logic is now here.    */
-int execute_single_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size, History *h){
+int execute_single_command(Command *cmd, const char *path_env, int path_exist, char *candidate, size_t candidate_size){
   if (!cmd || !cmd->argv || cmd->argc <= 0 || !cmd->argv[0]){
     return -1;
   }
@@ -1242,7 +1353,7 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
       perror("setup_redirection");
       return -3;
     }
-    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size, h);
+    int rc = execute_builtin(cmd, path_env, path_exist, candidate, candidate_size);
     restore_redirection(&saved_fd, target_fd);
     return rc;
   }
@@ -1270,7 +1381,7 @@ int execute_single_command(Command *cmd, const char *path_env, int path_exist, c
 }
 
 /* Function for executing pipelines */
-int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist, History *h){
+int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist){
   if (!pl || !pl->cmds || pl->count <= 1){
     return -1;
   }
@@ -1324,7 +1435,7 @@ int execute_multi_command(Pipeline *pl, const char *path_env, int path_exist, Hi
         }
       }
       if (is_builtin_cmd(pl->cmds[i].argv[0])){
-        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate), h);
+        int rc = execute_builtin(&pl->cmds[i], path_env, path_exist, candidate, sizeof(candidate));
         if (rc == SHELL_EXIT_REQUESTED){
           _exit(0);
         } else {
@@ -1356,9 +1467,9 @@ int main(){
   char *argv[BUFFER];     /* This is for the arguments */
   // setbuf(stdout, NULL);   /* Flush after every print */
   const char *path_env = getenv("PATH");
+  const char *history_path = getenv("HISTFILE");
   /* Below variable is for the history of commands. I could have used a struct
   but I decided to go with an array of strings.   */
-  History history;
   history.entries = malloc(HISTORY_CAPACITY * sizeof(char *));
   if (!history.entries){
     perror("malloc");
@@ -1367,6 +1478,15 @@ int main(){
   int path_exist = (path_env != NULL);
   if (!path_exist){
     printf("PATH does not exist or is corrupted.\n");
+  }
+  int local_hisotry_file_exist = 0;
+  if (history_path){
+    if(read_history_from_file(history_path) == -1){
+      fprintf(stderr, "Cloud not read history from file: %s\n", history_path);
+    } else {
+      history_append_cursor = history.count;
+      local_hisotry_file_exist = 1;
+    }
   }
   if (enable_raw_mode(&original_termios) == -1) {
     perror("enable_raw_mode");
@@ -1377,12 +1497,12 @@ int main(){
     setbuf(stdout, NULL);   /* Flush after every print */
     printf("$ ");
     // The function below allows a full string to be read, including the ending caracter '\n'
-    int nread = read_command_line(user_input, sizeof(user_input), path_env, &history);
+    int nread = read_command_line(user_input, sizeof(user_input), path_env);
     if (nread < 0){
       printf("\n");
       break; //<-- #TODO: this might need to be continue
     }
-    save_history(&history, user_input);
+    save_history(user_input);
     // Isolating the first part of the string, which is meant to be a command
     int argc = parse_user_input(user_input, argv, BUFFER);
     if (argc == -1){
@@ -1406,15 +1526,16 @@ int main(){
     }
     int rc = 0;
     if (pl.count == 1){
-      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate), &history);
+      rc = execute_single_command(&pl.cmds[0], path_env, path_exist, candidate, sizeof(candidate));
     } else {
-      rc = execute_multi_command(&pl, path_env, path_exist, &history);
+      rc = execute_multi_command(&pl, path_env, path_exist);
     }
     free_pipeline(&pl);
     free_argv(argv, BUFFER);
     if (rc == SHELL_EXIT_REQUESTED) break;
   }
-  free_history(&history);
+  if (local_hisotry_file_exist) append_history_to_file(history_path);
+  free_history();
   disable_raw_mode(&original_termios);
   return 0;
 }
