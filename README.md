@@ -1,5 +1,5 @@
 ## Why this project
-The goal of this project has been to build a simple shell in C locally, without using any external libraries, but rather leveraging the C language itself and some OS-specific calls. 
+The goal of this project has been to build a simple shell in C locally, without using any external libraries and **without** using **AI**, but rather leveraging the C language itself and some OS-specific calls. 
 The reason for making this project has been to remove some rust I had with the programming language itself, since I have not been using it consistently for many years (it is the second language I learned after BASIC).
 
 The shell is not complete, as at the time of writing the following features are still missing:
