@@ -1467,6 +1467,7 @@ int main(){
   char *argv[BUFFER];     /* This is for the arguments */
   // setbuf(stdout, NULL);   /* Flush after every print */
   const char *path_env = getenv("PATH");
+  const char *history_path = getenv("HISTFILE");
   /* Below variable is for the history of commands. I could have used a struct
   but I decided to go with an array of strings.   */
   history.entries = malloc(HISTORY_CAPACITY * sizeof(char *));
@@ -1477,6 +1478,15 @@ int main(){
   int path_exist = (path_env != NULL);
   if (!path_exist){
     printf("PATH does not exist or is corrupted.\n");
+  }
+  int local_hisotry_file_exist = 0;
+  if (history_path){
+    if(read_history_from_file(history_path) == -1){
+      fprintf(stderr, "Cloud not read history from file: %s\n", history_path);
+    } else {
+      history_append_cursor = history.count;
+      local_hisotry_file_exist = 1;
+    }
   }
   if (enable_raw_mode(&original_termios) == -1) {
     perror("enable_raw_mode");
@@ -1524,6 +1534,7 @@ int main(){
     free_argv(argv, BUFFER);
     if (rc == SHELL_EXIT_REQUESTED) break;
   }
+  if (local_hisotry_file_exist) append_history_to_file(history_path);
   free_history();
   disable_raw_mode(&original_termios);
   return 0;
