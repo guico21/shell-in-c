@@ -249,7 +249,7 @@ int append_history_to_file(const char *file){
     perror("file");
     return -1;
   }
-  for (int i = 0; i < history.count; i++){
+  for (int i = history_append_cursor; i < history.count; i++){
     if (fprintf(f, "%s\n", history.entries[i]) < 0){
       perror("fprintf");
       fclose(f);
