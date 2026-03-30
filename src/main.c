@@ -43,6 +43,7 @@ global hisotry variable. this is to ensure we can have a single varibale accssab
 multi file design (hence only a single file).
 */
 static History history = {NULL, 0, 0};
+static int history_append_cursor = 0;
 
 const char *builtin_cmds [] = {"exit", "echo", "type", "pwd", "cd", "history"}; // array of pointers to litterals
 const char special_chars[] = {'\"', '$', '\'', '\\'};
@@ -234,6 +235,7 @@ int write_history_to_file(const char *file){
     perror("fclose");
     return -1;
   }
+  history_append_cursor = history.count;
   return 1;
 }
 
@@ -258,6 +260,7 @@ int append_history_to_file(const char *file){
     perror("fclose");
     return -1;
   }
+  history_append_cursor = history.count;
   return 1;
 }
 
