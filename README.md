@@ -36,10 +36,14 @@ On top of the features that have not been implemented, I am aware the code can b
 This project has been built and tested on macOS. There are functions in the program that are POSIX and UNIX compliant, which makes this project not suitable to run on machines supporting Windows OS unless you change those functions and a few types. A dumb copilot can change those for you and you should be ready to go, just make sure it compiles.
 
 To compile the project, you need `clang` or `gcc`. I used `clang`. The command to build it is:
-`clang ./main.c -o main`
+```
+clang ./main.c -o main
+```
 Then to execute it:
-`./main`
-Pretty easy (and boring).
+```
+./main
+```
+Pretty easy (and boring). Of course, ensure you are with your terminal in the folder where you are running the compiler, otherwise it will not work.
 
 ## Folder structure
 Pretty easy: go to `/src`. In there you will have the `main.c` file. Everything is in there.
