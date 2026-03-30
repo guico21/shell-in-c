@@ -154,6 +154,7 @@ void free_history(){
   free(history.entries);
   history.entries = NULL;
   history.count = 0;
+  history.capacity = 0;
 }
 
 int save_history(const char *user_input){
