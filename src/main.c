@@ -214,6 +214,88 @@ void print_history(char **argv){
   }
 }
 
+int write_history_to_file(const char *file){
+  if (!file){
+    return -1;
+  }
+  FILE *f = fopen(file, "w");
+  if (!f){
+    perror("file");
+    return -1;
+  }
+  for (int i = 0; i < history.count; i++){
+    if (fprintf(f, "%s\n", history.entries[i]) < 0){
+      perror("fprintf");
+      fclose(f);
+      return -1;
+    }
+  }
+  if (fclose(f) != 0){
+    perror("fclose");
+    return -1;
+  }
+  return 1;
+}
+
+int append_history_to_file(const char *file){
+  /* This function and the above could have been merged into a single one, but for simplicity, I kept them unique */
+  if (!file){
+    return -1;
+  }
+  FILE *f = fopen(file, "a");
+  if (!f){
+    perror("file");
+    return -1;
+  }
+  for (int i = 0; i < history.count; i++){
+    if (fprintf(f, "%s\n", history.entries[i]) < 0){
+      perror("fprintf");
+      fclose(f);
+      return -1;
+    }
+  }
+  if (fclose(f) != 0){
+    perror("fclose");
+    return -1;
+  }
+  return 1;
+}
+
+int read_history_from_file(const char *file){
+  if (!file){
+    return -1;
+  }
+  FILE *f = fopen(file, "r");
+  if (!f){
+    perror("file");
+    return -1;
+  }
+  char *line = NULL;
+  size_t cap = 0;
+  ssize_t nread;
+  while ( (nread = getline(&line, &cap, f)) != -1){
+    if (nread >0 && line[nread-1] == '\n'){
+      line[nread - 1] = '\0';
+    }
+    if (save_history(line) != 1){
+      free(line);
+      fclose(f);
+      return -1;
+    }
+  }
+  free(line);
+  if (ferror(f)){
+    perror("getine");
+    fclose(f);
+    return -1;
+  }
+  if (fclose(f) != 0){
+    perror("fclose");
+    return -1;
+  }
+  return 1;
+}
+
 /* Helper to avoid that multiple /// are displayed when in reality we want just one / (try echo ./// and it will not give a problem).
 I discovered that in UNIX system, the multiple // are not an issue, but for a shell it is better to avoid that display.      */
 int normalise_trailing_slashes(char *path){
@@ -1155,9 +1237,18 @@ int execute_builtin(Command *cmd, const char *path_env, int path_exist, char *ca
     return SHELL_EXIT_REQUESTED;
   }
   if (strcmp(command, "history") == 0){
+    if (argc == 3 && strcmp(argv[1], "-r") == 0) {
+        return read_history_from_file(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "-w") == 0) {
+        return write_history_to_file(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "-a") == 0) {
+        return append_history_to_file(argv[2]);
+    }
     if (argc <= 2){
       print_history(argv);
-      return 0;
+      return 1;
     } else {
       fprintf(stderr, "history: too many arguments\n");
       return -1;
